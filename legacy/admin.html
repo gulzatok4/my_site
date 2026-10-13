@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Админка — Gulzat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Onest:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css?v=161" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  </head>
+  <body class="admin-page">
+    <header class="admin-nav">
+      <a class="logo logo-dark admin-logo" href="./index.html">Gulzat <span>админка</span></a>
+      <nav class="admin-tabs" aria-label="Разделы админки">
+        <a class="admin-tab-btn" href="#orders" data-tab="orders">
+          Заказы <span class="orders-nav-badge" id="orders-nav-badge" hidden>0</span>
+        </a>
+        <a class="admin-tab-btn" href="#clients" data-tab="clients">Клиенты</a>
+        <a class="admin-tab-btn" href="#products" data-tab="products">Товары и услуги</a>
+      </nav>
+      <a class="btn btn-ghost admin-nav-site" href="./index.html#shop">Открыть сайт</a>
+      <button type="button" class="btn btn-ghost" id="admin-logout" hidden>Выйти</button>
+    </header>
+
+    <main class="admin-main admin-main--list">
+      <section class="admin-list-card orders-card admin-tab" id="orders">
+        <div class="admin-sticky-head">
+          <div class="orders-head">
+            <div>
+              <h2>Заказы</h2>
+              <p class="admin-lead">
+                Сюда автоматически попадает каждый заказ: клиент вводит имя и телефон, после чего
+                переходит в WhatsApp.
+              </p>
+            </div>
+            <div class="admin-head-actions">
+              <button type="button" class="btn btn-ghost" id="orders-alerts" aria-pressed="false">Включить уведомления</button>
+              <button type="button" class="btn btn-ghost" id="orders-export">Скачать в Excel</button>
+              <button type="button" class="btn btn-ghost" id="orders-refresh">Обновить</button>
+            </div>
+          </div>
+          <div class="orders-filters" id="orders-filters" role="tablist"></div>
+          <input type="search" class="clients-search" id="orders-search" placeholder="Поиск по номеру, имени, телефону, товару или заметке" />
+        </div>
+        <form class="orders-login" id="orders-login" hidden>
+          <label>
+            <span>Пароль админки (ADMIN_PASSWORD из .env)</span>
+            <input type="password" id="orders-password" autocomplete="current-password" required />
+          </label>
+          <button type="submit" class="btn">Войти</button>
+        </form>
+        <p class="form-note" id="orders-note" role="status"></p>
+        <div class="orders-list" id="orders-list"></div>
+      </section>
+
+      <section class="admin-list-card clients-card admin-tab" id="clients" hidden>
+        <div class="admin-sticky-head">
+          <div class="orders-head">
+            <div>
+              <h2>Клиенты <span class="clients-count" id="clients-count"></span></h2>
+              <p class="admin-lead">
+                Один номер телефона — один клиент. Клиенты из заказов сохраняются автоматически, повторный
+                заказ не создаёт дубль.
+              </p>
+            </div>
+            <div class="admin-head-actions">
+              <button type="button" class="btn btn-ghost" id="clients-export">Скачать в Excel</button>
+              <button type="button" class="btn" id="clients-add">Добавить клиента</button>
+            </div>
+          </div>
+          <input type="search" class="clients-search" id="clients-search" placeholder="Поиск по имени, телефону или заметке" />
+        </div>
+        <form class="clients-form" id="clients-form" hidden>
+          <label>
+            <span>Имя</span>
+            <input type="text" id="client-name" maxlength="80" required />
+          </label>
+          <label>
+            <span>Телефон</span>
+            <input type="tel" id="client-phone" placeholder="+7 7__ ___ __ __" required />
+          </label>
+          <label class="clients-form-wide">
+            <span>Заметка</span>
+            <input type="text" id="client-note" maxlength="300" placeholder="Например: любит бордо, свадьба в мае" />
+          </label>
+          <div class="clients-form-actions">
+            <button type="submit" class="btn" id="client-save">Сохранить</button>
+            <button type="button" class="btn btn-ghost" id="client-cancel">Отмена</button>
+          </div>
+        </form>
+        <p class="form-note" id="clients-note" role="status"></p>
+        <div class="orders-list clients-list" id="clients-list"></div>
+      </section>
+
+      <section class="admin-list-card admin-tab" id="products" hidden>
+        <div class="admin-sticky-head">
+          <div class="orders-head">
+            <div>
+              <h2>Товары и услуги</h2>
+              <p class="admin-lead">
+                <strong>Товар</strong> — изделия (корзины, наборы, пуфы), на сайте в «Все товары».
+                <strong>Услуга</strong> — IT, сайты, боты, CRM и ИИ-ролики, в «Все услуги».
+                Каталог хранится на сервере (<code>data/catalog.json</code>), изменения сразу видны на сайте
+                с любого устройства.
+              </p>
+            </div>
+            <div class="admin-head-actions">
+              <button type="button" class="btn btn-ghost btn-danger-ghost" id="clear-products">Очистить магазин</button>
+              <button type="button" class="btn" id="open-product-modal">Добавить товар</button>
+            </div>
+          </div>
+        </div>
+        <p class="form-note" id="admin-page-note" role="status"></p>
+        <div id="admin-list" class="admin-list"></div>
+      </section>
+    </main>
+
+    <div class="admin-modal" id="product-modal" hidden>
+      <div class="admin-modal-backdrop" data-close-modal></div>
+      <div
+        class="admin-modal-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="product-modal-title"
+      >
+        <div class="admin-modal-head">
+          <h2 id="product-modal-title">Новый товар</h2>
+          <button type="button" class="admin-modal-close" id="close-product-modal" aria-label="Закрыть">
+            ×
+          </button>
+        </div>
+
+        <form id="product-form" class="admin-modal-form">
+          <input type="hidden" name="id" id="product-id" />
+
+          <div class="field">
+            <span class="field-label">Тип</span>
+            <input type="hidden" name="itemType" id="product-item-type" value="product" />
+            <div class="dd" id="type-dd">
+              <button
+                type="button"
+                class="dd-toggle"
+                id="type-dd-toggle"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+              >
+                <span id="type-dd-label">Товар</span>
+                <span class="dd-caret" aria-hidden="true"></span>
+              </button>
+              <ul class="dd-menu" id="type-dd-menu" role="listbox" hidden>
+                <li role="option" data-value="product" aria-selected="true">Товар</li>
+                <li role="option" data-value="service" aria-selected="false">Услуга</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="field">
+            <span class="field-label" id="category-field-label">Категория товара</span>
+            <input type="hidden" name="category" id="product-category" value="baskets" />
+            <div class="dd" id="category-dd">
+              <button
+                type="button"
+                class="dd-toggle"
+                id="category-dd-toggle"
+                aria-haspopup="listbox"
+                aria-expanded="false"
+              >
+                <span id="category-dd-label">Национальные корзины</span>
+                <span class="dd-caret" aria-hidden="true"></span>
+              </button>
+              <ul class="dd-menu" id="category-dd-menu" role="listbox" hidden></ul>
+            </div>
+          </div>
+
+          <label>
+            Название
+            <input
+              type="text"
+              name="name"
+              id="product-name"
+              required
+              maxlength="80"
+              placeholder="Например: ИИ-ролик для Instagram"
+            />
+          </label>
+
+          <label class="field" id="stock-field">
+            <span class="field-label">Остаток на складе</span>
+            <input type="number" name="stock" id="product-stock" min="0" max="9999" step="1" placeholder="Без ограничения" />
+            <span class="field-hint">Пусто — без ограничения, 0 — нет в наличии</span>
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label" id="price-field-label">Цена</span>
+              <input type="number" name="price" id="product-price" min="0" step="1" value="0" />
+            </label>
+            <div class="field">
+              <span class="field-label">Валюта</span>
+              <input type="hidden" name="currency" id="product-currency" value="kzt" />
+              <div class="dd" id="currency-dd">
+                <button
+                  type="button"
+                  class="dd-toggle"
+                  id="currency-dd-toggle"
+                  aria-haspopup="listbox"
+                  aria-expanded="false"
+                >
+                  <span id="currency-dd-label">Тенге (₸)</span>
+                  <span class="dd-caret" aria-hidden="true"></span>
+                </button>
+                <ul class="dd-menu" id="currency-dd-menu" role="listbox" hidden>
+                  <li role="option" data-value="kzt" aria-selected="true">Тенге (₸)</li>
+                  <li role="option" data-value="rub" aria-selected="false">Рубли (₽)</li>
+                  <li role="option" data-value="usd" aria-selected="false">Доллар ($)</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <p class="field-hint wide" id="price-hint">0 = цена по запросу / от … ₸ на сайте</p>
+
+          <label class="wide">
+            Описание
+            <textarea
+              name="description"
+              id="product-description"
+              rows="2"
+              maxlength="280"
+              placeholder="Коротко: что сделано, для кого, результат"
+            ></textarea>
+          </label>
+
+          <label class="wide" id="link-field">
+            Ссылка на ролик / работу (необязательно)
+            <input
+              type="url"
+              name="link"
+              id="product-link"
+              placeholder="https://youtube.com/... или Instagram / TikTok"
+            />
+          </label>
+
+          <label>
+            <span id="image-url-label">Фото</span>
+            <input type="text" name="image" id="product-image" placeholder="https://... или загрузите файл ниже" />
+          </label>
+
+          <label>
+            <span id="image-file-label">Загрузить с компьютера</span>
+            <input
+              type="file"
+              id="product-file"
+              accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp"
+            />
+          </label>
+
+          <div class="wide photo-preview" id="photo-preview" hidden>
+            <img id="photo-preview-img" alt="Превью фото" />
+            <p id="photo-preview-note"></p>
+          </div>
+
+          <div class="admin-form-actions">
+            <button type="button" class="btn btn-ghost" id="change-photo-btn" hidden>Заменить рисунок</button>
+            <button type="button" class="btn btn-ghost" id="clear-photo-btn" hidden>Убрать фото</button>
+            <button type="submit" class="btn" id="save-btn">Сохранить</button>
+            <button type="button" class="btn btn-ghost" id="cancel-edit" data-close-modal>Отмена</button>
+          </div>
+          <p class="form-note" id="admin-note" role="status"></p>
+        </form>
+      </div>
+    </div>
+
+    <script src="./products.js?v=56"></script>
+    <script src="./admin.js?v=49"></script>
+    <script src="./admin-export.js?v=1"></script>
+    <script src="./admin-orders.js?v=10"></script>
+    <script src="./admin-clients.js?v=5"></script>
+    <script src="./admin-tabs.js?v=1"></script>
+  </body>
+</html>
