@@ -1,0 +1,83 @@
+import { createElement } from "react";
+import { pdf } from "@react-pdf/renderer";
+import { PHONE, formatPhone, normalizeItemType } from "../lib/catalog.js";
+import { cartLinePrice } from "../lib/display.js";
+import { CatalogDocument } from "./CatalogDocument.jsx";
+import { registerPdfFonts } from "./fonts.js";
+import { prepareLogo, prepareProductPhotos } from "./images.js";
+import { catalogSections } from "./select.js";
+import { clipText, formatCatalogDate } from "./strings.js";
+
+export function catalogFileName(date = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  return `Gulzat_Katalog_${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}.pdf`;
+}
+
+export async function downloadCatalogPdf(options) {
+  const blob = await buildCatalogBlob(options);
+  saveBlob(blob, catalogFileName());
+}
+
+export async function shareCatalogPdf(options) {
+  const blob = await buildCatalogBlob(options);
+  const name = catalogFileName();
+  const file = new File([blob], name, { type: "application/pdf" });
+  if (typeof navigator.share !== "function" || !navigator.canShare?.({ files: [file] })) {
+    throw new Error("share_unavailable");
+  }
+  await navigator.share({ files: [file], title: name });
+}
+
+export async function buildCatalogBlob({ scope, selectedKeys, showPrices }) {
+  registerPdfFonts();
+  const sections = catalogSections({ scope, selectedKeys });
+  const products = sections.flatMap((section) => section.products);
+  const [logo, photos] = await Promise.all([prepareLogo(), prepareProductPhotos(products)]);
+  let photoIndex = 0;
+  const view = sections.map((section) => ({
+    code: section.code,
+    label: section.label,
+    cards: section.products.map((product) => {
+      const image = photos[photoIndex];
+      photoIndex += 1;
+      const price = Number(product.price) || 0;
+      return {
+        key: String(product.id || photoIndex),
+        name: String(product.name || "").trim() || "—",
+        description: clipText(product.description),
+        image,
+        priceText: showPrices ? cartLinePrice({ unit: price, lineTotal: price, product }, "ru") : "",
+        href: serviceHref(product),
+      };
+    }),
+  }));
+  return pdf(
+    createElement(CatalogDocument, {
+      scope,
+      logo,
+      phone: formatPhone(PHONE),
+      dateLabel: formatCatalogDate(new Date()),
+      sections: view,
+    })
+  ).toBlob();
+}
+
+function serviceHref(product) {
+  if (normalizeItemType(product.itemType) !== "service") return "";
+  const raw = String(product.link || "").trim();
+  if (!raw) return "";
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith("//")) return `https:${raw}`;
+  return raw;
+}
+
+function saveBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}

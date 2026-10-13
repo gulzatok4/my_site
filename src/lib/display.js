@@ -15,11 +15,10 @@ export function priceLabel(product) {
   return formatPrice(product.price, product.currency);
 }
 
-export function cartLinePrice(line) {
+export function cartLinePrice(line, lang) {
   if (line.unit > 0) return formatPrice(line.lineTotal, line.product.currency);
-  return normalizeItemType(line.product.itemType) === "service"
-    ? t("price.fromService")
-    : t("price.fromProduct");
+  const key = normalizeItemType(line.product.itemType) === "service" ? "price.fromService" : "price.fromProduct";
+  return t(key, lang);
 }
 
 export function stockLabel(product) {
