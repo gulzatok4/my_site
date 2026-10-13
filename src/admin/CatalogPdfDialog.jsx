@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { subscribeStore } from "../lib/catalog.js";
 import { catalogMatchCount, choiceKey, choicesForScope } from "../pdf/select.js";
 
 function canSharePdfFile() {
   try {
     if (typeof navigator.canShare !== "function") return false;
-    const file = new File([new Blob()], "Gulzat_Katalog.pdf", { type: "application/pdf" });
+    const file = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "Gulzat_Katalog.pdf", {
+      type: "application/pdf",
+    });
     return navigator.canShare({ files: [file] });
   } catch {
     return false;
@@ -24,10 +26,21 @@ export function CatalogPdfDialog({ onClose }) {
   const [showPrices, setShowPrices] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [readyFile, setReadyFile] = useState(null);
   const [tick, setTick] = useState(0);
+  const alive = useRef(true);
   const canShare = useMemo(() => canSharePdfFile(), []);
 
   useEffect(() => subscribeStore(() => setTick((value) => value + 1)), []);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    setReadyFile(null);
+  }, [scope, selected, showPrices]);
 
   const choices = useMemo(() => choicesForScope(scope), [scope, tick]);
   const count = catalogMatchCount({ scope, selectedKeys: selected });
@@ -46,8 +59,23 @@ export function CatalogPdfDialog({ onClose }) {
 
   async function run(action) {
     if (busy || empty) return;
+    if (action === "share" && readyFile) {
+      try {
+        await navigator.share({ files: [readyFile], title: readyFile.name });
+        if (alive.current) {
+          setReadyFile(null);
+          setError("");
+        }
+      } catch (reason) {
+        if (reason?.name === "AbortError") return;
+        console.error(reason);
+        if (alive.current) setError("Не удалось отправить PDF. Попробуйте ещё раз.");
+      }
+      return;
+    }
     setBusy(true);
     setError("");
+    setReadyFile(null);
     try {
       const pdf = await import("../pdf/output.js");
       const options = { scope, selectedKeys: selected, showPrices };
@@ -55,10 +83,17 @@ export function CatalogPdfDialog({ onClose }) {
       else await pdf.downloadCatalogPdf(options);
     } catch (reason) {
       if (reason?.name === "AbortError") return;
+      if (reason?.name === "NotAllowedError" && reason.file) {
+        if (alive.current) {
+          setReadyFile(reason.file);
+          setError("PDF готов. Нажмите «Поделиться» ещё раз.");
+        }
+        return;
+      }
       console.error(reason);
-      setError("Не удалось собрать PDF. Попробуйте ещё раз.");
+      if (alive.current) setError("Не удалось собрать PDF. Попробуйте ещё раз.");
     } finally {
-      setBusy(false);
+      if (alive.current) setBusy(false);
     }
   }
 

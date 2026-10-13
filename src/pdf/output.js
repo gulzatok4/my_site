@@ -4,7 +4,7 @@ import { PHONE, formatPhone, normalizeItemType } from "../lib/catalog.js";
 import { cartLinePrice } from "../lib/display.js";
 import { CatalogDocument } from "./CatalogDocument.jsx";
 import { registerPdfFonts } from "./fonts.js";
-import { prepareLogo, prepareProductPhotos } from "./images.js";
+import { prepareCatalogImages } from "./images.js";
 import { catalogSections } from "./select.js";
 import { clipText, formatCatalogDate } from "./strings.js";
 
@@ -23,16 +23,25 @@ export async function shareCatalogPdf(options) {
   const name = catalogFileName();
   const file = new File([blob], name, { type: "application/pdf" });
   if (typeof navigator.share !== "function" || !navigator.canShare?.({ files: [file] })) {
-    throw new Error("share_unavailable");
+    const error = new Error("share_unavailable");
+    error.file = file;
+    throw error;
   }
-  await navigator.share({ files: [file], title: name });
+  try {
+    await navigator.share({ files: [file], title: name });
+  } catch (reason) {
+    const error = new Error(reason?.message || "share_failed");
+    error.name = reason?.name || "Error";
+    error.file = file;
+    throw error;
+  }
 }
 
 export async function buildCatalogBlob({ scope, selectedKeys, showPrices }) {
   registerPdfFonts();
   const sections = catalogSections({ scope, selectedKeys });
   const products = sections.flatMap((section) => section.products);
-  const [logo, photos] = await Promise.all([prepareLogo(), prepareProductPhotos(products)]);
+  const { logo, photos } = await prepareCatalogImages(products);
   let photoIndex = 0;
   const view = sections.map((section) => ({
     code: section.code,
@@ -79,5 +88,5 @@ function saveBlob(blob, name) {
   document.body.appendChild(link);
   link.click();
   link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }

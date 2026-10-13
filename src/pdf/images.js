@@ -3,14 +3,16 @@ import { imageSrc } from "../lib/media.js";
 const POOL = 4;
 const cache = new Map();
 
-export function prepareLogo() {
-  return loadImage("/logo.png", { maxSide: 300, mime: "image/png", placeholder: "png" });
-}
+const LOGO = { maxSide: 300, mime: "image/png", placeholder: "png" };
+const PHOTO = { maxSide: 600, mime: "image/jpeg", quality: 0.8, placeholder: "jpeg" };
 
-export function prepareProductPhotos(products) {
-  return mapLimit(products, POOL, (product) =>
-    loadImage(imageSrc(product?.image), { maxSide: 600, mime: "image/jpeg", quality: 0.8, placeholder: "jpeg" })
-  );
+export async function prepareCatalogImages(products) {
+  const jobs = [
+    () => loadImage("/logo.png", LOGO),
+    ...products.map((product) => () => loadImage(imageSrc(product?.image), PHOTO)),
+  ];
+  const done = await mapLimit(jobs, POOL, (job) => job());
+  return { logo: done[0] || "", photos: done.slice(1) };
 }
 
 function loadImage(url, options) {
