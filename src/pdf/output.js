@@ -3,8 +3,10 @@ import { pdf } from "@react-pdf/renderer";
 import { PHONE, formatPhone, normalizeItemType } from "../lib/catalog.js";
 import { cartLinePrice } from "../lib/display.js";
 import { CatalogDocument } from "./CatalogDocument.jsx";
+import { InvoiceDocument } from "./InvoiceDocument.jsx";
 import { registerPdfFonts } from "./fonts.js";
 import { prepareCatalogImages } from "./images.js";
+import { summarizeInvoice } from "./money.js";
 import { catalogSections } from "./select.js";
 import { clipText, formatCatalogDate } from "./strings.js";
 
@@ -78,6 +80,46 @@ function serviceHref(product) {
   if (/^https?:\/\//i.test(raw)) return raw;
   if (raw.startsWith("//")) return `https:${raw}`;
   return raw;
+}
+
+export function invoiceFileName(number) {
+  const safe = String(number ?? "").replace(/[\\/:*?"<>|]/g, "").trim() || "0";
+  return `Gulzat_Schet_${safe}.pdf`;
+}
+
+export async function downloadInvoicePdf(payload) {
+  const blob = await buildInvoiceBlob(payload);
+  saveBlob(blob, invoiceFileName(payload.order?.number));
+}
+
+export async function shareInvoicePdf(payload) {
+  const blob = await buildInvoiceBlob(payload);
+  const name = invoiceFileName(payload.order?.number);
+  const file = new File([blob], name, { type: "application/pdf" });
+  if (typeof navigator.share !== "function" || !navigator.canShare?.({ files: [file] })) {
+    const error = new Error("share_unavailable");
+    error.file = file;
+    throw error;
+  }
+  try {
+    await navigator.share({ files: [file], title: name });
+  } catch (reason) {
+    const error = new Error(reason?.message || "share_failed");
+    error.name = reason?.name || "Error";
+    error.file = file;
+    throw error;
+  }
+}
+
+export async function buildInvoiceBlob({ order, seller, buyer, lines }) {
+  const summary = summarizeInvoice(lines, { vatPayer: seller?.vatPayer, vatRate: seller?.vatRate });
+  if (!summary.ok) {
+    const error = new Error(summary.reason || "invoice");
+    throw error;
+  }
+  registerPdfFonts();
+  const { logo } = await prepareCatalogImages([]);
+  return pdf(createElement(InvoiceDocument, { order, seller, buyer, lines, summary, logo })).toBlob();
 }
 
 function saveBlob(blob, name) {

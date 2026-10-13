@@ -21,6 +21,35 @@ export const strings = {
   watch: "Смотреть",
 };
 
+export const invoiceStrings = {
+  title: "Счёт на оплату",
+  beneficiary: "Бенефициар",
+  bin: "БИН/ИИН",
+  iik: "ИИК",
+  kbe: "КБе",
+  bank: "Банк бенефициара",
+  bik: "БИК",
+  knp: "КНП",
+  supplier: "Поставщик",
+  buyer: "Покупатель",
+  colNo: "№",
+  colName: "Наименование",
+  colQty: "Кол-во",
+  colUnit: "Ед.",
+  colPrice: "Цена",
+  colSum: "Сумма",
+  unitProduct: "шт.",
+  unitService: "усл.",
+  total: "Итого",
+  vatIncluded: "В том числе НДС",
+  noVat: "Без НДС",
+  grand: "Всего к оплате",
+  itemsOnSum: "Всего наименований",
+  onSum: "на сумму",
+  signatory: "Руководитель",
+  defaultNote: "Заказ запускается в работу после 100% предоплаты. Способ оплаты согласуем в WhatsApp.",
+};
+
 export function coverTitle(scope) {
   if (scope === "services") return strings.catalogServices;
   if (scope === "all") return strings.catalogAll;
@@ -29,6 +58,18 @@ export function coverTitle(scope) {
 
 export function formatCatalogDate(date) {
   return `${date.getDate()} ${MONTHS[date.getMonth()]} ${date.getFullYear()}`;
+}
+
+export function formatInvoiceDate(createdAt) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(createdAt || ""));
+  if (!match) return "";
+  const month = MONTHS[Number(match[2]) - 1];
+  if (!month) return "";
+  return `${Number(match[3])} ${month} ${match[1]} г.`;
+}
+
+export function invoiceHeading(number, createdAt) {
+  return `${invoiceStrings.title} № ${number} от ${formatInvoiceDate(createdAt)}`;
 }
 
 export function pageLabel(page, total) {
