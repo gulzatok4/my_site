@@ -161,6 +161,23 @@ function categoriesForType(itemType) {
   return [...base, ...custom].filter((item) => !hidden.has(item.code));
 }
 
+/** Все категории типа, включая скрытые. Витрина по-прежнему берёт categoriesForType. */
+function categoryChoices(itemType) {
+  const type = normalizeItemType(itemType);
+  const hidden = new Set(loadHiddenCategories());
+  const base = type === "service" ? SERVICE_CATEGORIES : PRODUCT_CATEGORIES;
+  const custom = loadCustomCategories().filter((item) => item.itemType === type);
+  const seen = new Set();
+  const list = [];
+  for (const item of [...base, ...custom]) {
+    const code = String(item.code || "").trim().toLowerCase();
+    if (!code || seen.has(code)) continue;
+    seen.add(code);
+    list.push({ code, label: String(item.label || code), itemType: type, hidden: hidden.has(code) });
+  }
+  return list;
+}
+
 function allCategories() {
   return [
     ...PRODUCT_CATEGORIES,
@@ -1356,6 +1373,7 @@ export {
   SERVICE_CATEGORIES,
   ITEM_TYPES,
   categoriesForType,
+  categoryChoices,
   allCategories,
   addCustomCategory,
   removeCategory,

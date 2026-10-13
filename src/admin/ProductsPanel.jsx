@@ -23,6 +23,7 @@ import {
 } from "../lib/catalog.js";
 import { formatPrice } from "../lib/catalog.js";
 import { compressImageFile, imageSrc } from "../lib/media.js";
+import { CatalogPdfDialog } from "./CatalogPdfDialog.jsx";
 
 const EMPTY = {
   id: "",
@@ -60,6 +61,7 @@ export function ProductsPanel() {
   const [form, setForm] = useState(EMPTY);
   const [note, setNote] = useState("");
   const [pageNote, setPageNote] = useState("");
+  const [pdfOpen, setPdfOpen] = useState(false);
   const [menu, setMenu] = useState("");
   const [newCategory, setNewCategory] = useState("");
   const [pageNoteLink, setPageNoteLink] = useState(null);
@@ -79,9 +81,9 @@ export function ProductsPanel() {
   }, []);
 
   useEffect(() => {
-    document.body.classList.toggle("admin-modal-open", open);
+    document.body.classList.toggle("admin-modal-open", open || pdfOpen);
     return () => document.body.classList.remove("admin-modal-open");
-  }, [open]);
+  }, [open, pdfOpen]);
 
   useEffect(() => {
     function onPush(event) {
@@ -310,6 +312,9 @@ export function ProductsPanel() {
             <button type="button" className="btn btn-ghost btn-danger-ghost" onClick={clearShop}>
               Очистить магазин
             </button>
+            <button type="button" className="btn btn-ghost" onClick={() => setPdfOpen(true)}>
+              Каталог PDF
+            </button>
             <button type="button" className="btn" onClick={openCreate}>
               Добавить товар
             </button>
@@ -341,6 +346,7 @@ export function ProductsPanel() {
         ) : null}
       </div>
 
+      {pdfOpen ? <CatalogPdfDialog onClose={() => setPdfOpen(false)} /> : null}
       <div className="admin-modal" hidden={!open}>
         <div className="admin-modal-backdrop" onClick={close} />
         <div className="admin-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="product-modal-title">
