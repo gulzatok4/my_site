@@ -4234,3 +4234,9 @@ body.checkout-open {
   font-size: 0.95rem;
 }
 
+.seller-form {
+  display: grid;
+  gap: 0.85rem;
+  max-width: 46rem;
+}
+

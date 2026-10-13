@@ -179,6 +179,60 @@ function Set-DbMeta($db, [string]$key, $value) {
   $db.Execute("INSERT INTO meta (key, value) VALUES (@key, @value) ON CONFLICT (key) DO UPDATE SET value = excluded.value", @{ key = $key; value = [string]$value })
 }
 
+$script:SellerTextFields = @("name", "bin", "address", "bank", "iik", "bik", "kbe", "knp", "phone", "email", "signatory", "note")
+
+function Limit-SellerText($value) {
+  if ($null -eq $value) { return "" }
+  $text = ([string]$value).Trim()
+  if ($text.Length -gt 300) { $text = $text.Substring(0, 300) }
+  return $text
+}
+
+function New-EmptySellerProfile {
+  $profile = [ordered]@{
+    name = ""; bin = ""; address = ""; bank = ""; iik = ""; bik = ""; kbe = ""; knp = ""
+    phone = ""; email = ""; signatory = ""; vatPayer = $false; vatRate = $null; note = ""
+  }
+  return $profile
+}
+
+function ConvertTo-SellerProfile($raw) {
+  $profile = New-EmptySellerProfile
+  foreach ($key in $script:SellerTextFields) {
+    $profile[$key] = Limit-SellerText (Get-DbValue $raw $key)
+  }
+  $vat = Get-DbValue $raw "vatPayer"
+  $profile["vatPayer"] = ($vat -eq $true -or "$vat" -eq "true")
+  $rateRaw = Get-DbValue $raw "vatRate"
+  $rateText = ""
+  if ($null -ne $rateRaw) { $rateText = ([string]$rateRaw).Trim().Replace(",", ".") }
+  $rate = 0.0
+  $parsed = $false
+  if ($rateText) {
+    $parsed = [double]::TryParse($rateText, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$rate)
+  }
+  if ($parsed -and -not [double]::IsNaN($rate) -and -not [double]::IsInfinity($rate)) {
+    $profile["vatRate"] = [math]::Round($rate, 4)
+  }
+  return $profile
+}
+
+function Get-SellerProfile($db) {
+  $raw = Get-DbMeta $db "seller_profile"
+  if ($null -eq $raw -or -not ([string]$raw).Trim()) { return (New-EmptySellerProfile) }
+  try {
+    return (ConvertTo-SellerProfile ($raw | ConvertFrom-Json))
+  } catch {
+    return (New-EmptySellerProfile)
+  }
+}
+
+function Save-SellerProfile($db, $raw) {
+  $profile = ConvertTo-SellerProfile $raw
+  Set-DbMeta $db "seller_profile" ($profile | ConvertTo-Json -Compress -Depth 4)
+  return $profile
+}
+
 function New-DbJsonSerializer {
   Add-Type -AssemblyName System.Web.Extensions
   $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer

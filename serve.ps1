@@ -814,6 +814,34 @@ function Clear-FinishedChats {
   }
 }
 
+function Handle-Seller($ctx, [string]$method) {
+  if (-not (Test-AdminAccess $ctx)) {
+    Write-AdminDenied $ctx
+    return
+  }
+  if ($method -eq "GET") {
+    Write-Json $ctx 200 @{ ok = $true; seller = (Get-SellerProfile $db) }
+    return
+  }
+  if ($method -ne "PUT") {
+    Write-Json $ctx 405 @{ ok = $false; error = "method_not_allowed" }
+    return
+  }
+  if ($ctx.Request.ContentLength64 -gt 65536) {
+    Write-Json $ctx 413 @{ ok = $false; error = "too_large" }
+    return
+  }
+  try { $data = Get-RequestJson $ctx 5000 } catch { $data = $null }
+  if ($null -eq $data) {
+    Write-Json $ctx 400 @{ ok = $false; error = "bad_request" }
+    return
+  }
+  $db.Begin()
+  $saved = Save-SellerProfile $db $data
+  $db.Commit()
+  Write-Json $ctx 200 @{ ok = $true; seller = $saved }
+}
+
 function Handle-Request($ctx) {
   $path = [Uri]::UnescapeDataString($ctx.Request.Url.LocalPath)
   $method = $ctx.Request.HttpMethod.ToUpperInvariant()
@@ -838,6 +866,16 @@ function Handle-Request($ctx) {
       Handle-Catalog $ctx $method
     } catch {
       Write-Host "Catalog API error: $($_.Exception.Message)"
+      try { Write-Json $ctx 500 @{ ok = $false; error = "server_error" } } catch {}
+    }
+    return
+  }
+
+  if ($path -eq "/api/settings/seller") {
+    try {
+      Handle-Seller $ctx $method
+    } catch {
+      Write-Host "Seller API error: $($_.Exception.Message)"
       try { Write-Json $ctx 500 @{ ok = $false; error = "server_error" } } catch {}
     }
     return

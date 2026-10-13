@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { ClientsPanel } from "../admin/ClientsPanel.jsx";
 import { OrdersPanel } from "../admin/OrdersPanel.jsx";
 import { ProductsPanel } from "../admin/ProductsPanel.jsx";
+import { SellerPanel } from "../admin/SellerPanel.jsx";
 import { adminKey, setAdminKey, subscribeAdmin } from "../lib/adminSession.js";
 import { disableCatalogPush, enableCatalogPush, scheduleCatalogPush, syncCatalogFromServer } from "../lib/catalog.js";
 
@@ -10,6 +11,7 @@ const TABS = [
   { id: "orders", label: "Заказы" },
   { id: "clients", label: "Клиенты" },
   { id: "products", label: "Товары и услуги" },
+  { id: "seller", label: "Реквизиты" },
 ];
 
 export function AdminPage() {
@@ -112,6 +114,9 @@ export function AdminPage() {
         </div>
         <div hidden={tab !== "products"}>
           <ProductsPanel />
+        </div>
+        <div hidden={tab !== "seller"}>
+          <SellerPanel />
         </div>
       </main>
     </>
