@@ -130,6 +130,11 @@ function NoteField({ order, onSave }) {
   );
 }
 
+function InvoiceDialogView({ invoice, onClose }) {
+  const Dialog = invoice.Dialog;
+  return <Dialog order={invoice.order} seller={invoice.seller} onClose={onClose} />;
+}
+
 export function OrdersPanel({ onBadge }) {
   const [orders, setOrders] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -139,9 +144,35 @@ export function OrdersPanel({ onBadge }) {
   const [password, setPassword] = useState("");
   const [pendingCancel, setPendingCancel] = useState("");
   const [alerts, setAlerts] = useState(() => localStorage.getItem(ALERTS_KEY) === "on");
+  const [invoice, setInvoice] = useState(null);
+  const openingInvoice = useRef(false);
   const knownIds = useRef(null);
   const audioRef = useRef(null);
   const baseTitle = useRef(document.title);
+
+  useEffect(() => {
+    document.body.classList.toggle("admin-modal-open", Boolean(invoice));
+    return () => document.body.classList.remove("admin-modal-open");
+  }, [invoice]);
+
+  async function openInvoice(order) {
+    if (openingInvoice.current) return;
+    openingInvoice.current = true;
+    try {
+      const [data, dialog] = await Promise.all([adminFetch("/api/settings/seller"), import("./InvoiceDialog.jsx")]);
+      setInvoice({ order, seller: data.seller || {}, Dialog: dialog.InvoiceDialog });
+    } catch (error) {
+      setNote(
+        error.status === 429
+          ? "Слишком много неверных попыток. Вход заблокирован на 15 минут."
+          : error.status === 401
+            ? "Сначала войдите в разделе «Заказы»."
+            : "Не удалось загрузить реквизиты."
+      );
+    } finally {
+      openingInvoice.current = false;
+    }
+  }
 
   async function load({ silent = false } = {}) {
     if (!silent) setNote("Загружаю заказы…");
@@ -533,6 +564,9 @@ export function OrdersPanel({ onBadge }) {
                   </form>
                 ) : null}
                 <div className="order-contact">
+                  <button type="button" className="btn btn-ghost" onClick={() => openInvoice(order)}>
+                    Счёт PDF
+                  </button>
                   <a className="btn btn-ghost" href={clientWhatsAppUrl(order, digits)} target="_blank" rel="noopener noreferrer">
                     WhatsApp
                   </a>
@@ -545,6 +579,7 @@ export function OrdersPanel({ onBadge }) {
           );
         })}
       </div>
+      {invoice?.Dialog ? <InvoiceDialogView invoice={invoice} onClose={() => setInvoice(null)} /> : null}
     </section>
   );
 }

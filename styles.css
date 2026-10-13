@@ -4240,3 +4240,22 @@ body.checkout-open {
   max-width: 46rem;
 }
 
+.admin-modal-dialog.invoice-dialog-panel {
+  width: min(640px, 100%);
+}
+
+.invoice-lines {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.invoice-line {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.invoice-totals {
+  text-align: right;
+  font-weight: 600;
+}
+
