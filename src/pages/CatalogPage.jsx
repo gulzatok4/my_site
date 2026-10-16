@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { categoriesForType, loadProducts, normalizeItemType } from "../lib/catalog.js";
+import { categoriesForType, isListedProduct, loadProducts, normalizeItemType } from "../lib/catalog.js";
 import { catalogLead, sortBySeeds } from "../lib/display.js";
 import { useStore } from "../store.jsx";
 import { CategoryPicker } from "../components/CategoryPicker.jsx";
+import { ErrorBoundary } from "../components/ErrorBoundary.jsx";
 import { ProductCard } from "../components/ProductCard.jsx";
 
 const SEEDS = {
@@ -18,7 +19,7 @@ export function CatalogPage({ kind }) {
   const categoryKey = categoriesForType(itemType).map((item) => item.code).join("|");
   const activeCategory = category === "all" || categoryKey.split("|").includes(category) ? category : "all";
   const products = sortBySeeds(
-    loadProducts().filter((item) => normalizeItemType(item.itemType) === itemType),
+    loadProducts().filter((item) => normalizeItemType(item.itemType) === itemType && isListedProduct(item)),
     SEEDS[kind]
   ).filter((item) => activeCategory === "all" || item.category === activeCategory);
 
@@ -58,7 +59,9 @@ export function CatalogPage({ kind }) {
           <div className="shop-grid catalog-grid">
             {products.length ? (
               products.map((product) => (
-                <ProductCard key={product.id} product={product} withQty={kind === "products"} />
+                <ErrorBoundary key={product.id} compact>
+                  <ProductCard product={product} withQty={kind === "products"} />
+                </ErrorBoundary>
               ))
             ) : (
               <p className="shop-empty">{catalogLead(kind, 0)}</p>

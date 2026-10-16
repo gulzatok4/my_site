@@ -21,6 +21,7 @@ export function AdminPage() {
   const tab = TABS.some((item) => item.id === hash) ? hash : "orders";
   const [badge, setBadge] = useState(0);
   const [authed, setAuthed] = useState(Boolean(adminKey()));
+  const [outdated, setOutdated] = useState(false);
 
   useEffect(() => {
     document.body.classList.add("admin-page");
@@ -47,6 +48,12 @@ export function AdminPage() {
       }),
     []
   );
+
+  useEffect(() => {
+    const onOutdated = () => setOutdated(true);
+    window.addEventListener("gulzat:outdated-admin", onOutdated);
+    return () => window.removeEventListener("gulzat:outdated-admin", onOutdated);
+  }, []);
 
   useEffect(() => {
     enableCatalogPush((result) => {
@@ -105,6 +112,14 @@ export function AdminPage() {
           Выйти
         </button>
       </header>
+      {outdated ? (
+        <p className="admin-outdated" role="alert">
+          Админка устарела, обновите страницу. Изменения не сохранены. Открытая форма при обновлении очистится — скопируйте текст, если он ещё нужен.
+          <button type="button" onClick={() => window.location.reload()}>
+            Обновить
+          </button>
+        </p>
+      ) : null}
       <main className="admin-main admin-main--list">
         <div hidden={tab !== "orders"}>
           <OrdersPanel onBadge={setBadge} />

@@ -3,7 +3,7 @@
 
 Register-AiSkill -Id "cart" -Prompt @"
 Функция add_to_cart кладёт позицию в корзину сайта. Вызывай её, как только заказ готов: клиент выбрал конкретную позицию из каталога, назвал количество (если не назвал — 1) и для изделий цвет, либо прямо сказал «заказываю», «оформляйте», «беру», «добавь в корзину».
-Название передавай точно как в lookup_catalog. Если не уверена, какая позиция, сначала вызови lookup_catalog. Для нескольких позиций вызови функцию для каждой. qty — сколько штук этой позиции нужно всего: при изменении количества вызови снова с новым числом, оно заменит старое.
+Название передавай точно как в lookup_catalog. Если не уверена, какая позиция, сначала вызови lookup_catalog. Для нескольких позиций вызови функцию для каждой. qty прибавляется к тому, что уже лежит в корзине. replace=true ставь только когда клиент прямо просит заменить количество на новое число.
 Не вызывай add_to_cart, пока клиент только спрашивает или выбирает, и для того, чего нет в каталоге.
 После успешного вызова коротко повтори заказ и скажи, что он уже в корзине: значок «Корзина» вверху сайта → «Оформить заказ», заявка уйдёт Гульзат в WhatsApp, точную стоимость и сроки она подтвердит. Ссылки на WhatsApp и телефон в этом ответе не нужны.
 Если функция ответила, что позицию добавить нельзя, не говори, что она в корзине: переведи к Гульзат по обычным правилам.
@@ -16,7 +16,11 @@ Register-AiSkill -Id "cart" -Prompt @"
     }
     qty = @{
       type = "integer"
-      description = "Сколько штук этой позиции нужно клиенту всего, от 1 до 99."
+      description = "Сколько штук добавить к уже лежащим в корзине, от 1 до 99. Вместе с replace=true — сколько штук должно остаться всего."
+    }
+    replace = @{
+      type = "boolean"
+      description = "true только если клиент просит заменить количество этой позиции. Иначе false."
     }
     color = @{
       type = "string"
@@ -77,7 +81,7 @@ function Find-AiCartProduct($products, [string]$query) {
       $hit = switch ($stage) {
         "id" { $id -eq $needle }
         "name" { $name -eq $needle }
-        default { $name.Contains($needle) -or ($name.Length -ge 4 -and $needle.Contains($name)) }
+        default { $needle.Length -ge 4 -and $name.Contains($needle) }
       }
       if ($hit) { [void]$hits.Add($product) }
     }
@@ -128,6 +132,8 @@ function Add-AiCartItem($inputArgs) {
   $qty = 1
   [void][int]::TryParse([string](Get-AiVal $inputArgs "qty"), [ref]$qty)
   $qty = [Math]::Max(1, [Math]::Min($limit, $qty))
+  $replaceFlag = Get-AiVal $inputArgs "replace"
+  $replace = ($replaceFlag -eq $true) -or ("$replaceFlag" -eq "true")
 
   $color = ""
   if (-not $isService) { $color = ([string](Get-AiVal $inputArgs "color")).Trim() }
@@ -143,10 +149,12 @@ function Add-AiCartItem($inputArgs) {
     id = $id
     name = $name
     qty = $qty
+    replace = $replace
     color = $(if ($color.Length -gt 80) { $color.Substring(0, 80) } else { $color })
     dueDate = $dueDate
     comment = $(if ($comment.Length -gt 300) { $comment.Substring(0, 300) } else { $comment })
   })
-  $note = $(if ($qty -lt $limit -or $limit -eq 99) { "" } else { " (больше нет в наличии)" })
-  return "Готово: «$name» × $qty$note лежит в корзине сайта. Скажи клиенту, что заказ в корзине и его можно оформить кнопкой «Оформить заказ»."
+  $note = $(if ($qty -lt $limit -or $limit -eq 99) { "" } else { " Больше нет в наличии." })
+  $how = $(if ($replace) { "количество заменено на $qty" } else { "добавлено $qty шт. к тому, что уже было в корзине" })
+  return "Готово: «$name», $how.$note Скажи клиенту, что заказ в корзине и его можно оформить кнопкой «Оформить заказ». Итоговое число в корзине может быть больше, если позиция уже лежала там."
 }

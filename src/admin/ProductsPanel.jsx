@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   CURRENCIES,
@@ -15,13 +15,14 @@ import {
   normalizeCurrency,
   normalizeItemType,
   productStock,
+  resolveStockSave,
   removeCategory,
   restoreDefaultCatalog,
   saveProducts,
   subscribeStore,
   trySaveProducts,
 } from "../lib/catalog.js";
-import { formatPrice } from "../lib/catalog.js";
+import { formatPrice, openPriceAmount } from "../lib/catalog.js";
 import { compressImageFile, imageSrc } from "../lib/media.js";
 import { CatalogPdfDialog } from "./CatalogPdfDialog.jsx";
 
@@ -32,6 +33,7 @@ const EMPTY = {
   name: "",
   stock: "",
   price: "0",
+  priceOnRequest: false,
   currency: "kzt",
   description: "",
   link: "",
@@ -43,9 +45,11 @@ const EMPTY = {
 
 function adminPriceText(product) {
   const price = Number(product.price);
-  if (!Number.isFinite(price) || price <= 0) {
-    return normalizeItemType(product.itemType) === "service" ? "от 15 000 ₸ (по сложности)" : "от 5 000 ₸";
+  if (product.priceOnRequest === true) {
+    const amount = formatPrice(openPriceAmount(product.itemType), "kzt");
+    return normalizeItemType(product.itemType) === "service" ? `от ${amount} (по сложности)` : `от ${amount}`;
   }
+  if (!Number.isFinite(price) || price <= 0) return "Цена не задана";
   return formatPrice(product.price, product.currency);
 }
 
@@ -65,6 +69,7 @@ export function ProductsPanel() {
   const [menu, setMenu] = useState("");
   const [newCategory, setNewCategory] = useState("");
   const [pageNoteLink, setPageNoteLink] = useState(null);
+  const stockTouched = useRef(false);
 
   const products = loadProducts();
   void tick;
@@ -85,10 +90,21 @@ export function ProductsPanel() {
     return () => document.body.classList.remove("admin-modal-open");
   }, [open, pdfOpen]);
 
+  // Пока карточку не трогали, показываем остаток из каталога: его уже могли списать новые заказы
+  useEffect(() => {
+    if (!open || !form.id || stockTouched.current) return;
+    if (normalizeItemType(form.itemType) === "service") return;
+    const product = loadProducts().find((item) => item.id === form.id);
+    if (!product || normalizeItemType(product.itemType) === "service") return;
+    const stock = productStock(product);
+    const next = stock === null ? "" : String(stock);
+    setForm((current) => (current.id !== form.id || current.stock === next ? current : { ...current, stock: next }));
+  }, [tick, open, form.id, form.itemType]);
+
   useEffect(() => {
     function onPush(event) {
       const result = event.detail;
-      if (result === "ok" || result === "unchanged") return;
+      if (result === "ok" || result === "unchanged" || result === "outdated") return;
       setPageNote(
         result === "unauthorized"
           ? "Изменения сохранены только в этом браузере. Войдите на вкладке «Заказы» (пароль админки) — после входа они сразу попадут на сайт."
@@ -110,12 +126,14 @@ export function ProductsPanel() {
   }
 
   function openCreate() {
+    stockTouched.current = false;
     setForm({ ...EMPTY, category: categoriesForType("product")[0]?.code || "baskets" });
     setNote("");
     setOpen(true);
   }
 
   function openEdit(product) {
+    stockTouched.current = false;
     const isData = Boolean(product.image?.startsWith("data:"));
     const stock = productStock(product);
     setForm({
@@ -126,6 +144,7 @@ export function ProductsPanel() {
       name: product.name || "",
       stock: stock === null ? "" : String(stock),
       price: Number.isFinite(Number(product.price)) ? String(product.price) : "0",
+      priceOnRequest: product.priceOnRequest === true,
       currency: normalizeCurrency(product.currency),
       description: product.description || "",
       link: product.link || "",
@@ -163,13 +182,22 @@ export function ProductsPanel() {
     const list = loadProducts();
     const price = form.price.trim() === "" ? 0 : Number(form.price);
     const itemType = normalizeItemType(form.itemType);
-    const stockRaw = itemType === "service" ? "" : form.stock.trim();
-    const stockValue = Number(stockRaw);
     if (!form.name.trim() || Number.isNaN(price) || price < 0) {
       setNote("Проверьте название и цену.");
       return;
     }
-    if (stockRaw !== "" && (!Number.isFinite(stockValue) || stockValue < 0)) {
+    const index = form.id ? list.findIndex((item) => item.id === form.id) : -1;
+    if (form.id && index === -1) {
+      setNote("Запись не найдена.");
+      return;
+    }
+    const resolved = resolveStockSave({
+      itemType,
+      stockTouched: !form.id || stockTouched.current,
+      formStock: form.stock,
+      currentStock: index >= 0 ? list[index].stock : null,
+    });
+    if (!resolved.ok) {
       setNote("Остаток — целое число от 0. Оставьте поле пустым, если ограничения нет.");
       return;
     }
@@ -177,7 +205,8 @@ export function ProductsPanel() {
     const payload = {
       name: form.name.trim(),
       price,
-      stock: stockRaw === "" ? null : Math.min(9999, Math.floor(stockValue)),
+      priceOnRequest: Boolean(form.priceOnRequest),
+      stock: resolved.stock,
       currency: normalizeCurrency(form.currency),
       category: normalizeCategory(form.category, itemType),
       itemType,
@@ -186,11 +215,6 @@ export function ProductsPanel() {
       link: form.link.trim(),
     };
     if (form.id) {
-      const index = list.findIndex((item) => item.id === form.id);
-      if (index === -1) {
-        setNote("Запись не найдена.");
-        return;
-      }
       list[index] = { ...list[index], ...payload };
       delete list[index].quantity;
     } else {
@@ -274,6 +298,9 @@ export function ProductsPanel() {
             {itemTypeLabel(product.itemType)} · {categoryLabel(product.category, product.itemType)}
           </p>
           <p className="admin-price">{adminPriceText(product)}</p>
+          {Number(product.price) <= 0 && product.priceOnRequest !== true ? (
+            <p className="form-note">Цена 0 без пометки «цена по запросу» — на витрине не показывается.</p>
+          ) : null}
           {adminStockText(product) ? <p className="admin-cat">{adminStockText(product)}</p> : null}
           <p>{product.description || ""}</p>
           {product.link ? (
@@ -470,7 +497,10 @@ export function ProductsPanel() {
                   step="1"
                   placeholder="Без ограничения"
                   value={form.stock}
-                  onChange={(event) => patch({ stock: event.target.value })}
+                  onChange={(event) => {
+                    stockTouched.current = true;
+                    patch({ stock: event.target.value });
+                  }}
                 />
                 <span className="field-hint">Пусто — без ограничения, 0 — нет в наличии</span>
               </label>
@@ -480,6 +510,14 @@ export function ProductsPanel() {
               <label className="field">
                 <span className="field-label">Цена</span>
                 <input type="number" min="0" step="1" value={form.price} onChange={(event) => patch({ price: event.target.value })} />
+                <label className="field-hint">
+                  <input
+                    type="checkbox"
+                    checked={form.priceOnRequest}
+                    onChange={(event) => patch({ priceOnRequest: event.target.checked })}
+                  />{" "}
+                  Цена по запросу
+                </label>
               </label>
               <div className="field">
                 <span className="field-label">Валюта</span>

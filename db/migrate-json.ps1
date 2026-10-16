@@ -11,7 +11,7 @@ function Read-LegacyJson([string]$file) {
     $raw = [IO.File]::ReadAllText($file, [Text.Encoding]::UTF8)
     if (-not $raw.Trim()) { return $null }
     try {
-      return ,((New-DbJsonSerializer).DeserializeObject($raw))
+      return ,(ConvertFrom-JsonValue $raw)
     } catch {
       Write-Host "WARNING: $file is damaged ($($_.Exception.Message)), trying $file.bak"
     }
@@ -21,7 +21,7 @@ function Read-LegacyJson([string]$file) {
     $raw = [IO.File]::ReadAllText($bak, [Text.Encoding]::UTF8)
     if (-not $raw.Trim()) { return $null }
     try {
-      return ,((New-DbJsonSerializer).DeserializeObject($raw))
+      return ,(ConvertFrom-JsonValue $raw)
     } catch {
       throw "$file and $bak are both damaged: $($_.Exception.Message)"
     }

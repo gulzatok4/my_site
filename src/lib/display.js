@@ -1,24 +1,34 @@
 import {
   formatPrice,
+  isPriceOnRequest,
   normalizeCurrency,
   normalizeItemType,
+  openPriceAmount,
   productStock,
 } from "./catalog.js";
 import { getLang, t } from "./i18n.js";
 
+function fillOpenPrice(key, itemType, lang) {
+  return t(key, lang).replaceAll("{price}", formatPrice(openPriceAmount(itemType), "kzt"));
+}
+
+export function featurePrice(itemType, lang) {
+  const isService = normalizeItemType(itemType) === "service";
+  return fillOpenPrice(isService ? "feat.service.price" : "feat.product.price", itemType, lang);
+}
+
 export function priceLabel(product) {
-  const isService = normalizeItemType(product.itemType) === "service";
+  if (isPriceOnRequest(product)) return featurePrice(product.itemType);
   const price = Number(product.price);
-  if (!Number.isFinite(price) || price <= 0) {
-    return isService ? t("feat.service.price") : t("feat.product.price");
-  }
+  if (!Number.isFinite(price) || price <= 0) return "";
   return formatPrice(product.price, product.currency);
 }
 
 export function cartLinePrice(line, lang) {
   if (line.unit > 0) return formatPrice(line.lineTotal, line.product.currency);
+  if (!isPriceOnRequest(line.product)) return "";
   const key = normalizeItemType(line.product.itemType) === "service" ? "price.fromService" : "price.fromProduct";
-  return t(key, lang);
+  return fillOpenPrice(key, line.product.itemType, lang);
 }
 
 export function stockLabel(product) {

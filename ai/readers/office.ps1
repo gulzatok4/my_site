@@ -56,6 +56,29 @@ function Test-AiZipEntry([byte[]]$bytes, [string]$entryName) {
   }
 }
 
+function Open-AiCappedEntry($entry) {
+  $max = 8388608
+  if ($null -eq $entry) { throw "missing entry" }
+  if ([int64]$entry.Length -gt $max) { throw "zip entry too large" }
+  $source = $entry.Open()
+  try {
+    $ms = New-Object IO.MemoryStream
+    $buf = New-Object byte[] 65536
+    $total = 0
+    while ($true) {
+      $read = $source.Read($buf, 0, $buf.Length)
+      if ($read -le 0) { break }
+      $total += $read
+      if ($total -gt $max) { throw "zip entry too large" }
+      $ms.Write($buf, 0, $read)
+    }
+    $ms.Position = 0
+    return $ms
+  } finally {
+    $source.Dispose()
+  }
+}
+
 function New-AiXmlReader($entry) {
   $settings = New-Object Xml.XmlReaderSettings
   $settings.DtdProcessing = [Xml.DtdProcessing]::Ignore
@@ -63,7 +86,7 @@ function New-AiXmlReader($entry) {
   $settings.IgnoreComments = $true
   $settings.IgnoreProcessingInstructions = $true
   $settings.CloseInput = $true
-  return [Xml.XmlReader]::Create($entry.Open(), $settings)
+  return [Xml.XmlReader]::Create((Open-AiCappedEntry $entry), $settings)
 }
 
 function Read-AiXmlDocument($entry) {

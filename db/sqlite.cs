@@ -1,5 +1,5 @@
-// Minimal SQLite binding for Windows PowerShell 5.1 (C# 5, .NET Framework 4).
-// The official sqlite3.dll lives in db\native\x64 and db\native\x86; Load() picks the one matching the process.
+// Minimal SQLite binding. Windows PowerShell loads db\native\*\sqlite3.dll.
+// PowerShell 7 on Linux uses the system libsqlite3 (Docker installs it).
 using System;
 using System.Collections;
 using System.Collections.Generic;
@@ -11,7 +11,7 @@ namespace Gulzat.Data
 {
     internal static class Native
     {
-        private const string Lib = "sqlite3.dll";
+        private const string Lib = "sqlite3";
 
         [DllImport("kernel32", CharSet = CharSet.Unicode, SetLastError = true)]
         internal static extern IntPtr LoadLibrary(string path);
@@ -72,11 +72,16 @@ namespace Gulzat.Data
             {
                 if (!loaded)
                 {
-                    string arch = Environment.Is64BitProcess ? "x64" : "x86";
-                    string file = System.IO.Path.Combine(System.IO.Path.Combine(nativeRoot, arch), "sqlite3.dll");
-                    if (Native.LoadLibrary(file) == IntPtr.Zero)
+                    // 4 Unix, 6 MacOSX, 128 the old Mono value. Everywhere else is Windows.
+                    int platform = (int)Environment.OSVersion.Platform;
+                    if (platform != 4 && platform != 6 && platform != 128)
                     {
-                        throw new InvalidOperationException("Cannot load " + file + " (Windows error " + Marshal.GetLastWin32Error() + ")");
+                        string arch = Environment.Is64BitProcess ? "x64" : "x86";
+                        string file = System.IO.Path.Combine(System.IO.Path.Combine(nativeRoot, arch), "sqlite3.dll");
+                        if (Native.LoadLibrary(file) == IntPtr.Zero)
+                        {
+                            throw new InvalidOperationException("Cannot load " + file + " (Windows error " + Marshal.GetLastWin32Error() + ")");
+                        }
                     }
                     loaded = true;
                 }

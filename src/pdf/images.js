@@ -12,7 +12,12 @@ export async function prepareCatalogImages(products) {
     ...products.map((product) => () => loadImage(imageSrc(product?.image), PHOTO)),
   ];
   const done = await mapLimit(jobs, POOL, (job) => job());
-  return { logo: done[0] || "", photos: done.slice(1) };
+  const photos = done.slice(1);
+  return {
+    logo: done[0]?.data || "",
+    photos: photos.map((item) => item?.data || ""),
+    failed: photos.filter((item) => item?.failed).length,
+  };
 }
 
 function loadImage(url, options) {
@@ -24,13 +29,13 @@ function loadImage(url, options) {
 }
 
 async function renderImage(url, options) {
-  if (!url) return placeholder(options.placeholder);
+  if (!url) return { data: placeholder(options.placeholder), failed: false };
   try {
     const img = await decodeImage(url);
-    return rasterize(img, options);
+    return { data: rasterize(img, options), failed: false };
   } catch (error) {
     console.error(error);
-    return placeholder(options.placeholder);
+    return { data: placeholder(options.placeholder), failed: true };
   }
 }
 

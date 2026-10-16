@@ -16,12 +16,13 @@ export function catalogFileName(date = new Date()) {
 }
 
 export async function downloadCatalogPdf(options) {
-  const blob = await buildCatalogBlob(options);
+  const { blob, failed } = await buildCatalogBlob(options);
   saveBlob(blob, catalogFileName());
+  return failed;
 }
 
 export async function shareCatalogPdf(options) {
-  const blob = await buildCatalogBlob(options);
+  const { blob, failed } = await buildCatalogBlob(options);
   const name = catalogFileName();
   const file = new File([blob], name, { type: "application/pdf" });
   if (typeof navigator.share !== "function" || !navigator.canShare?.({ files: [file] })) {
@@ -37,13 +38,14 @@ export async function shareCatalogPdf(options) {
     error.file = file;
     throw error;
   }
+  return failed;
 }
 
 export async function buildCatalogBlob({ scope, selectedKeys, showPrices }) {
   registerPdfFonts();
   const sections = catalogSections({ scope, selectedKeys });
   const products = sections.flatMap((section) => section.products);
-  const { logo, photos } = await prepareCatalogImages(products);
+  const { logo, photos, failed } = await prepareCatalogImages(products);
   let photoIndex = 0;
   const view = sections.map((section) => ({
     code: section.code,
@@ -55,14 +57,14 @@ export async function buildCatalogBlob({ scope, selectedKeys, showPrices }) {
       return {
         key: String(product.id || photoIndex),
         name: String(product.name || "").trim() || "—",
-        description: clipText(product.description),
+        description: clipText(product.description, 110),
         image,
         priceText: showPrices ? cartLinePrice({ unit: price, lineTotal: price, product }, "ru") : "",
         href: serviceHref(product),
       };
     }),
   }));
-  return pdf(
+  const blob = await pdf(
     createElement(CatalogDocument, {
       scope,
       logo,
@@ -71,6 +73,7 @@ export async function buildCatalogBlob({ scope, selectedKeys, showPrices }) {
       sections: view,
     })
   ).toBlob();
+  return { blob, failed };
 }
 
 function serviceHref(product) {

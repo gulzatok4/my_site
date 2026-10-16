@@ -93,7 +93,12 @@ export function ClientsPanel() {
   async function load({ silent = false } = {}) {
     try {
       const data = await adminFetch("/api/clients");
-      setClients(Array.isArray(data.clients) ? data.clients : []);
+      if (!Array.isArray(data.clients)) {
+        const error = new Error("bad_json");
+        error.status = 500;
+        throw error;
+      }
+      setClients(data.clients);
       if (!silent) setNote("");
     } catch (error) {
       setClients([]);

@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+data
+.env
+.env.*
+!.env.example
+*.log
+legacy
+db/native
+db/tools
+.tools

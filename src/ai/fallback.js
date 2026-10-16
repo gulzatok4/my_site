@@ -11,44 +11,59 @@ export const fallbackRules = [
   {
     id: "services",
     test: /услуг|it|айти|crm|бот|сайт|систем|ролик|видео|нейро/,
-    reply: () => [
-      "Услуги Gulzat:",
-      "• IT-системы и CRM, поддержка, боты",
-      "• Сайты и лендинги для продаж",
-      "• ИИ-ролики для бизнеса и соцсетей",
-      "",
-      "Цена от 15 000 ₸ — зависит от сложности. Могу подсказать, с чего начать, или сразу открыть каталог услуг.",
-    ].join("\n"),
+    reply: (_q, catalog) => {
+      const lines = formatNamed(namedItems(catalog, "service"));
+      if (lines) return `Услуги на сайте:\n${lines}\n\nНапишите, какая нужна — уточню задачу до перехода к Гульзат.`;
+      return [
+        "Услуги Gulzat:",
+        "• IT-системы и CRM, поддержка, боты",
+        "• Сайты и лендинги для продаж",
+        "• ИИ-ролики для бизнеса и соцсетей",
+        "",
+        "Точную цену смотрите в каталоге на сайте.",
+      ].join("\n");
+    },
   },
   {
     id: "products",
     test: /товар|издел|корзин|пуф|свадеб|набор|фотозон|рукодел|бархат/,
-    reply: () => [
-      "Товары ручной работы:",
-      "• Готовые изделия и свадебные наборы",
-      "• Национальные корзины — қалта",
-      "• Пуфы — мягкие сиденья",
-      "• Фотозоны и декор под ваш дизайн",
-      "",
-      "Цена от 5 000 ₸ — индивидуальные заказы. Нажмите «Все товары» в магазине или напишите, что нужно.",
-    ].join("\n"),
+    reply: (_q, catalog) => {
+      const lines = formatNamed(namedItems(catalog, "product"));
+      if (lines) return `Товары на сайте:\n${lines}\n\nНапишите, что нужно: цвет, количество и к какой дате.`;
+      return [
+        "Товары ручной работы:",
+        "• Готовые изделия и свадебные наборы",
+        "• Национальные корзины — қалта",
+        "• Пуфы — мягкие сиденья",
+        "• Фотозоны и декор под ваш дизайн",
+        "",
+        "Точную цену смотрите в каталоге на сайте.",
+      ].join("\n");
+    },
   },
   {
     id: "price",
     test: /цен|стоим|сколько|прайс|₸|тенге|доллар/,
-    reply: () => [
-      "Ориентир: услуги — от 15 000 ₸, товары — от 5 000 ₸. Точную сумму и сроки подтвердит Гульзат после короткого описания задачи.",
-      "",
-      "Могу сразу перевести вас к ней. Напишите в WhatsApp:",
-      WA,
-      "",
-      "Готовый текст:",
-      "Здравствуйте, Гульзат! Хочу уточнить стоимость. Нужно: ...",
-    ].join("\n"),
+    reply: (_q, catalog) => {
+      const lines = formatNamed((Array.isArray(catalog) ? catalog : []).filter((item) => item && item.price));
+      const head = lines
+        ? `Цены с сайта:\n${lines}`
+        : "Каталог сейчас не открылся, поэтому цены не называю. Откройте раздел товаров или услуг на сайте.";
+      return [head, "", "Чтобы назвать точную сумму, напишите, что нужно, цвет, количество и к какой дате."].join("\n");
+    },
+  },
+  {
+    id: "order",
+    test: /заказ|оформить|в корзину/,
+    reply: () =>
+      [
+        "Давайте соберём заказ здесь. Напишите, что именно нужно, цвет, количество и к какой дате.",
+        "Если позиция есть в каталоге, я положу её в корзину — оттуда заявка уйдёт Гульзат.",
+      ].join("\n"),
   },
   {
     id: "contact",
-    test: /связат|контакт|телефон|whatsapp|ватсап|написать|заказ|гульзат/,
+    test: /связат|контакт|телефон|whatsapp|ватсап|написать|гульзат/,
     reply: () => [
       "Чтобы оформить заказ или уточнить детали, лучше написать Гульзат напрямую — она подтвердит цену и сроки лично.",
       "",
@@ -79,10 +94,22 @@ export const fallbackRules = [
   },
 ];
 
-export function replyFor(text) {
+function namedItems(catalog, kind) {
+  const list = Array.isArray(catalog) ? catalog : [];
+  return list.filter((item) => item && item.name && (!kind || item.itemType === kind));
+}
+
+function formatNamed(items) {
+  return items
+    .slice(0, 6)
+    .map((item) => `• ${item.name}${item.price ? ` — ${item.price}` : ""}`)
+    .join("\n");
+}
+
+export function replyFor(text, catalog) {
   const q = String(text || "").toLowerCase().replace(/ё/g, "е");
   for (const rule of fallbackRules) {
-    if (rule.test.test(q)) return rule.reply(q);
+    if (rule.test.test(q)) return rule.reply(q, catalog);
   }
   return [
     `Я ${NAME}, консультант сайта.`,
@@ -91,7 +118,7 @@ export function replyFor(text) {
   ].join(" ");
 }
 
-export function fallbackReply(text, files) {
+export function fallbackReply(text, files, catalog) {
   const list = Array.isArray(files) ? files : [];
   if (list.some((file) => file.kind === "image")) {
     return [
@@ -102,5 +129,5 @@ export function fallbackReply(text, files) {
   if (list.length) {
     return "Получила файл. Опишите коротко, что нужно: изделие или услуга, цвет, количество и к какой дате.";
   }
-  return replyFor(text);
+  return replyFor(text, catalog);
 }

@@ -1,5 +1,6 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, Outlet, useLocation } from "react-router-dom";
+import { catalogSyncNotice, syncCatalogFromServer } from "../lib/catalog.js";
 import { langTitle } from "../lib/display.js";
 import { useStore } from "../store.jsx";
 import { CartDrawer } from "./CartDrawer.jsx";
@@ -11,12 +12,29 @@ export function SiteShell() {
   const { t, cycleLang, cartOpen, checkout, contactEl, closeCart, closeCheckout, closeContact, openContact } = useStore();
   const location = useLocation();
   const navRef = useRef(null);
+  const [queueNotice, setQueueNotice] = useState("");
+  const catalogNotice = catalogSyncNotice();
   const home = location.pathname === "/";
   const lang = langTitle();
 
   useEffect(() => {
     closeContact();
   }, [location.pathname]);
+
+  useEffect(() => {
+    const onQueue = (event) => {
+      const status = event.detail;
+      const key =
+        status === "price_changed"
+          ? "queue.price"
+          : status === "out_of_stock" || status === "unavailable"
+            ? "queue.stock"
+            : "queue.other";
+      setQueueNotice(t(key));
+    };
+    window.addEventListener("gulzat:order-queue", onQueue);
+    return () => window.removeEventListener("gulzat:order-queue", onQueue);
+  }, [t]);
 
   useEffect(() => {
     document.body.classList.toggle("products-page", location.pathname === "/products" || location.pathname === "/services");
@@ -111,6 +129,26 @@ export function SiteShell() {
 
   return (
     <>
+      {catalogNotice || queueNotice ? (
+        <div className="site-notices">
+          {catalogNotice ? (
+            <p className="catalog-sync-notice" role="status">
+              <span>{t(catalogNotice === "seeds" ? "catalog.syncSeeds" : "catalog.syncStale")}</span>
+              <button type="button" onClick={() => syncCatalogFromServer()}>
+                {t("checkout.retry")}
+              </button>
+            </p>
+          ) : null}
+          {queueNotice ? (
+            <p className="queue-notice" role="alert">
+              <span>{queueNotice}</span>
+              <button type="button" onClick={() => setQueueNotice("")}>
+                {t("checkout.close")}
+              </button>
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <header className="nav" ref={navRef}>
         <Link className="logo" to="/#top">
           <img className="logo-mark" src="/logo.png" alt="" />

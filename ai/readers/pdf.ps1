@@ -55,12 +55,43 @@ function Read-AiPdfText([byte[]]$bytes) {
   return $sb.ToString()
 }
 
+function Find-AiPdfObjects([string]$raw) {
+  $found = New-Object System.Collections.Generic.List[object]
+  $pos = 0
+  $n = $raw.Length
+  while ($pos -lt $n -and $found.Count -lt 8000) {
+    if ($script:AiFileDeadline -and [DateTime]::UtcNow -gt $script:AiFileDeadline) { break }
+    $hit = $raw.IndexOf("obj", $pos)
+    if ($hit -lt 0) { break }
+    $after = $hit + 3
+    $beforeOk = ($hit -eq 0) -or -not [char]::IsLetterOrDigit($raw[$hit - 1])
+    $afterOk = ($after -ge $n) -or -not [char]::IsLetterOrDigit($raw[$after])
+    if (-not $beforeOk -or -not $afterOk) { $pos = $hit + 3; continue }
+    $i = $hit - 1
+    while ($i -ge 0 -and [char]::IsWhiteSpace($raw[$i])) { $i-- }
+    $genEnd = $i
+    while ($i -ge 0 -and [char]::IsDigit($raw[$i])) { $i-- }
+    if ($i -eq $genEnd) { $pos = $hit + 3; continue }
+    while ($i -ge 0 -and [char]::IsWhiteSpace($raw[$i])) { $i-- }
+    $idEnd = $i
+    while ($i -ge 0 -and [char]::IsDigit($raw[$i])) { $i-- }
+    if ($i -eq $idEnd) { $pos = $hit + 3; continue }
+    $id = 0
+    if (-not [int]::TryParse($raw.Substring($i + 1, $idEnd - $i), [ref]$id)) { $pos = $hit + 3; continue }
+    $end = $raw.IndexOf("endobj", $after)
+    if ($end -lt 0) { break }
+    [void]$found.Add(@{ Id = $id; Body = $raw.Substring($after, $end - $after) })
+    $pos = $end + 6
+  }
+  return ,$found.ToArray()
+}
+
 function New-AiPdfDoc([byte[]]$bytes) {
   $raw = $script:AiPdfLatin.GetString($bytes)
   if ($raw -match '/Encrypt\s') { return $null }
   $doc = @{ Objects = @{}; Fonts = @{}; Budget = 41943040 }
-  foreach ($m in [regex]::Matches($raw, '(?s)(?<!\d)(\d+)\s+\d+\s+obj\b(.*?)\bendobj')) {
-    $body = $m.Groups[2].Value
+  foreach ($m in (Find-AiPdfObjects $raw)) {
+    $body = $m.Body
     $entry = @{ Dict = $body; Stream = $null; Data = $null }
     $sm = [regex]::Match($body, '>>\s*stream(?:\r\n|\n|\r)')
     if ($sm.Success) {
@@ -75,7 +106,7 @@ function New-AiPdfDoc([byte[]]$bytes) {
       }
       $entry.Stream = $body.Substring($start, $end - $start)
     }
-    $doc.Objects[[int]$m.Groups[1].Value] = $entry
+    $doc.Objects[$m.Id] = $entry
   }
 
   foreach ($num in @($doc.Objects.Keys)) {
@@ -486,6 +517,7 @@ function Read-AiPdfContent($doc, [string]$content, $fonts, $forms, $sb, [int]$de
   while ($m.Success) {
     $tokens++
     if ($tokens -gt 400000 -or $sb.Length -gt $script:AiPdfMaxChars) { break }
+    if (($tokens % 2000) -eq 0 -and $script:AiFileDeadline -and [DateTime]::UtcNow -gt $script:AiFileDeadline) { break }
     $t = $m.Value
     $pos = $m.Index + $m.Length
     $c = $t[0]

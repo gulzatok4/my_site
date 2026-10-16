@@ -14,7 +14,9 @@ import {
   normalizePhone,
   orderItemFromProduct,
   orderItemsFromCart,
+  orderRequestBody,
   orderWhatsAppUrl,
+  queuePendingOrder,
   saveCustomer,
   sendOrderToCrm,
 } from "../lib/catalog.js";
@@ -29,8 +31,10 @@ export function CheckoutModal() {
   const [dueDate, setDueDate] = useState("");
   const [comment, setComment] = useState("");
   const [error, setError] = useState("");
+  const [offline, setOffline] = useState(false);
   const [sending, setSending] = useState(false);
   const lock = useRef(false);
+  const clientIdRef = useRef("");
 
   const hasProducts = checkout
     ? checkout.source === "cart"
@@ -50,12 +54,14 @@ export function CheckoutModal() {
     setName(saved.name);
     setPhone(saved.phone ? formatPhone(saved.phone) : "");
     const wishes = checkout.source === "cart" ? loadCartWishes() : { color: "", dueDate: "", comment: "" };
-    setColor(wishes.color.slice(0, 80));
+    setColor(wishes.color.slice(0, 300));
     setDueDate(wishes.dueDate >= todayIso() ? wishes.dueDate : "");
     setComment(wishes.comment.slice(0, 500));
     setError("");
+    setOffline(false);
     setSending(false);
     lock.current = false;
+    clientIdRef.current = "";
   }, [checkout]);
 
   if (!checkout) return null;
@@ -91,27 +97,54 @@ export function CheckoutModal() {
     }
     lock.current = true;
     setSending(true);
+    setOffline(false);
     const wishes = {
       color: hasProducts ? color.trim() : "",
       dueDate,
       comment: comment.trim(),
     };
     const customer = { name: cleanName, phone: cleanPhone };
-    const clientId = `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    if (!clientIdRef.current) {
+      clientIdRef.current = `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    }
     const status = await sendOrderToCrm({
       customer,
       channel: "whatsapp",
       source: checkout.source,
       items,
       wishes,
-      clientId,
+      clientId: clientIdRef.current,
     });
-    if (status === "rejected" || status === "out_of_stock" || status === "price_changed") {
+    if (status === "retry") {
       lock.current = false;
       setSending(false);
-      setError(
-        status === "out_of_stock" ? t("ui.outOfStock") : status === "price_changed" ? t("checkout.errPrice") : t("checkout.errSend")
-      );
+      setOffline(true);
+      setError(t("checkout.offline"));
+      return;
+    }
+    if (
+      status === "rejected" ||
+      status === "out_of_stock" ||
+      status === "price_changed" ||
+      status === "unavailable" ||
+      status === "rate_limited" ||
+      status === "too_many"
+    ) {
+      lock.current = false;
+      setSending(false);
+      const message =
+        status === "out_of_stock"
+          ? t("ui.outOfStock")
+          : status === "price_changed"
+            ? t("checkout.errPrice")
+            : status === "unavailable"
+              ? t("checkout.errGone")
+              : status === "rate_limited"
+                ? t("checkout.errRate")
+                : status === "too_many"
+                  ? t("checkout.errMany")
+                  : t("checkout.errSend");
+      setError(message);
       return;
     }
     saveCustomer(customer);
@@ -125,6 +158,39 @@ export function CheckoutModal() {
     closeCheckout();
     const opened = window.open(url, "_blank", "noopener,noreferrer");
     if (!opened) window.location.assign(url);
+  }
+
+  function sendViaWhatsApp() {
+    const fromCart = checkout.source === "cart";
+    const product = fromCart ? null : loadProducts().find((item) => item.id === checkout.product?.id) || checkout.product;
+    const qty = fromCart ? 1 : Math.min(maxOrderQty(product), Math.max(1, Number(checkout.qty) || 1));
+    const items = fromCart ? orderItemsFromCart() : [orderItemFromProduct(product, qty)].filter(Boolean);
+    if (!items.length) return;
+    const wishes = {
+      color: hasProducts ? color.trim() : "",
+      dueDate,
+      comment: comment.trim(),
+    };
+    const customer = { name: name.trim(), phone: normalizePhone(phone) };
+    const body = orderRequestBody({
+      customer,
+      channel: "whatsapp",
+      source: checkout.source,
+      items,
+      wishes,
+      clientId: clientIdRef.current,
+    });
+    queuePendingOrder(JSON.stringify(body));
+    const url = fromCart
+      ? cartWhatsAppUrl(loadCart(), customer, wishes)
+      : orderWhatsAppUrl(product, items[0].qty, customer, wishes);
+    const opened = window.open(url, "_blank", "noopener,noreferrer");
+    if (!opened) window.location.assign(url);
+    if (fromCart) {
+      clearCart();
+      closeCart();
+    }
+    closeCheckout();
   }
 
   return (
@@ -183,7 +249,7 @@ export function CheckoutModal() {
               </span>
               <input
                 type="text"
-                maxLength={80}
+                maxLength={300}
                 autoComplete="off"
                 placeholder={t("checkout.colorPh")}
                 value={color}
@@ -218,9 +284,20 @@ export function CheckoutModal() {
           <p className="checkout-error" role="alert">
             {error}
           </p>
-          <button type="submit" className="btn checkout-submit" disabled={sending}>
-            {t("checkout.submitWa")}
-          </button>
+          {offline ? (
+            <div className="checkout-offline">
+              <button type="button" className="btn checkout-submit" disabled={sending} onClick={submit}>
+                {t("checkout.retry")}
+              </button>
+              <button type="button" className="btn btn-ghost" disabled={sending} onClick={sendViaWhatsApp}>
+                {t("checkout.waInstead")}
+              </button>
+            </div>
+          ) : (
+            <button type="submit" className="btn checkout-submit" disabled={sending}>
+              {t("checkout.submitWa")}
+            </button>
+          )}
         </form>
       </div>
     </div>

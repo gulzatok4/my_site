@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { askAssistant, linkParts, NAME } from "../ai/index.js";
-import { getCartLines, loadProducts, saveCartWishes, setCartQty } from "../lib/catalog.js";
+import { apiHistory, askAssistant, chatCartNote, linkParts, mergeInflight, NAME, newChatId } from "../ai/index.js";
+import { applyAssistantCart } from "../lib/catalog.js";
 import { CHAT_DOC_LIMIT, CHAT_IMAGE_LIMIT, CHAT_PAYLOAD_LIMIT, fileKind, prepareChatFile } from "../lib/media.js";
 import { useStore } from "../store.jsx";
 
@@ -40,30 +40,27 @@ function isStalePlaceholder(item) {
   return item.pending || (item.role === "bot" && item.text === "…");
 }
 
-function loadThread() {
+function loadStoredRaw() {
   try {
     const saved = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
-    return Array.isArray(saved) ? saved.filter((item) => item && typeof item === "object" && !isStalePlaceholder(item)) : [];
+    return Array.isArray(saved) ? saved.filter((item) => item && typeof item === "object" && item.role) : [];
   } catch {
     return [];
   }
 }
 
-function apiHistory(thread) {
-  return thread
-    .map((item) => ({
-      role: item.role === "user" ? "user" : "assistant",
-      content: String(item.text || "").replace(/^\[файл:\s*.*\]\s*$/i, "").trim(),
-    }))
-    .filter((item) => item.content);
+function loadThread() {
+  return loadStoredRaw().filter((item) => !isStalePlaceholder(item));
 }
 
 function persistThread(thread) {
   const recent = thread.slice(-HISTORY_LIMIT);
   const slim = (previewCount) =>
     recent.map((item, index) => ({
+      id: item.id || "",
       role: item.role,
       text: item.text || "",
+      context: String(item.context || "").slice(0, 4000),
       files: (item.files || []).map((file) => ({
         kind: file.kind,
         name: file.name || "",
@@ -76,6 +73,8 @@ function persistThread(thread) {
       })),
       ...(item.cart?.length ? { cart: item.cart } : {}),
       ...(item.pending ? { pending: true } : {}),
+      ...(item.local ? { local: true } : {}),
+      ...(item.automatic ? { automatic: true } : {}),
     }));
   for (const previewCount of [HISTORY_LIMIT, 10, 0]) {
     try {
@@ -85,33 +84,6 @@ function persistThread(thread) {
       /* quota: retry with fewer photo previews */
     }
   }
-}
-
-/** Кладёт в корзину позиции, которые ассистент собрал в готовый заказ; возвращает то, что реально попало в корзину */
-function applyChatCart(items) {
-  const added = [];
-  const colors = [];
-  const comments = [];
-  let dueDate = "";
-  for (const item of items) {
-    const id = String(item?.id || "");
-    const qty = Math.min(99, Math.max(1, Number(item?.qty) || 1));
-    if (!id || !loadProducts().some((product) => product.id === id)) continue;
-    setCartQty(id, qty);
-    const line = getCartLines().find((entry) => entry.product.id === id);
-    if (!line) continue;
-    const name = line.product.name || String(item.name || "");
-    added.push({ name, qty: line.qty });
-    const color = String(item.color || "").trim();
-    const comment = String(item.comment || "").trim();
-    if (color) colors.push({ name, text: color });
-    if (comment) comments.push({ name, text: comment });
-    if (!dueDate && item.dueDate) dueDate = String(item.dueDate);
-  }
-  const joinNotes = (notes) =>
-    notes.length > 1 ? notes.map((note) => `${note.name}: ${note.text}`).join("; ") : notes[0]?.text || "";
-  if (added.length) saveCartWishes({ color: joinNotes(colors), dueDate, comment: joinNotes(comments) });
-  return added;
 }
 
 export function ChatWidget() {
@@ -124,15 +96,16 @@ export function ChatWidget() {
   const [attachOpen, setAttachOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [notice, setNotice] = useState("");
+  const [photoFail, setPhotoFail] = useState("");
   const sendingRef = useRef(false);
+  const inflightRef = useRef(null);
+  const abortRef = useRef(null);
   const listRef = useRef(null);
   const inputRef = useRef(null);
   const panelRef = useRef(null);
   const rootRef = useRef(null);
   const photoRef = useRef(null);
   const fileRef = useRef(null);
-  const historyRef = useRef(apiHistory(loadThread()));
-
   useEffect(() => {
     const list = listRef.current;
     if (list) list.scrollTop = list.scrollHeight;
@@ -140,10 +113,14 @@ export function ChatWidget() {
 
   useEffect(() => {
     function onStorage(event) {
-      if (event.key !== HISTORY_KEY || sendingRef.current) return;
-      const next = loadThread();
-      setMessages(next);
-      historyRef.current = apiHistory(next);
+      if (event.key !== HISTORY_KEY) return;
+      if (sendingRef.current && inflightRef.current) {
+        const merged = mergeInflight(loadStoredRaw(), inflightRef.current);
+        persistThread(merged);
+        setMessages(merged);
+        return;
+      }
+      setMessages(loadThread());
     }
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
@@ -208,7 +185,15 @@ export function ChatWidget() {
       try {
         item = await prepareChatFile(file);
       } catch {
+        if (kind === "image") {
+          setPhotoFail(file.name || "фото");
+          continue;
+        }
         item = { kind: "file", name: file.name || "файл", type: file.type || "", preview: "", dataUrl: "", text: "" };
+      }
+      if (kind === "image" && !item.dataUrl) {
+        setPhotoFail(file.name || "фото");
+        continue;
       }
       const size = String(item.dataUrl || "").length;
       if (payload + size > CHAT_PAYLOAD_LIMIT) {
@@ -221,8 +206,29 @@ export function ChatWidget() {
     setPending(next);
   }
 
-  async function send(raw) {
+  function cancelSend() {
+    abortRef.current?.abort();
+  }
+
+  function publishInflight() {
+    const merged = mergeInflight(loadStoredRaw(), inflightRef.current);
+    remember(merged);
+    return merged;
+  }
+
+  function sendWithoutPhoto() {
+    const text = draft.trim();
+    if (!text && !pending.length) {
+      setNotice("Без этого фото отправлять нечего. Напишите сообщение или нажмите «Отмена».");
+      return;
+    }
+    setPhotoFail("");
+    send(undefined, { ignorePhoto: true });
+  }
+
+  async function send(raw, { ignorePhoto = false } = {}) {
     const text = String(raw ?? draft).trim();
+    if (!ignorePhoto && photoFail) return;
     if (sendingRef.current || (!text && !pending.length)) return;
     sendingRef.current = true;
     setSending(true);
@@ -232,13 +238,12 @@ export function ChatWidget() {
     const files = pending;
     setPending([]);
     setDraft("");
-    const previous = historyRef.current.slice(-12);
+    const previous = apiHistory(loadThread()).slice(-12);
     const apiText = text || files.map((file) => `[${file.kind === "image" ? "фото" : "файл"}: ${file.name}]`).join(" ");
-    const userMsg = { role: "user", text, files };
-    const withUser = [...messages, userMsg, { role: "bot", text: "…", files: [], pending: true }];
-    remember(withUser);
-    const userEntry = apiText ? { role: "user", content: apiText } : null;
-    if (userEntry) historyRef.current.push(userEntry);
+    const userMsg = { id: newChatId(), role: "user", text, files, context: apiText };
+    const pendingMsg = { id: newChatId(), role: "bot", text: "…", files: [], pending: true };
+    inflightRef.current = { user: userMsg, pending: pendingMsg, bot: null };
+    publishInflight();
     const attachments = files.map((file) => ({
       kind: file.kind,
       name: file.name,
@@ -246,18 +251,75 @@ export function ChatWidget() {
       dataUrl: file.dataUrl || "",
       text: file.text || "",
     }));
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const { reply, files: parsed, cart } = await askAssistant({ message: text, history: previous, attachments, files });
-      const digest = parsed
+      const result = await askAssistant({
+        message: text,
+        history: previous,
+        attachments,
+        files,
+        signal: controller.signal,
+      });
+      if (result.error === "cancelled" || (controller.signal.aborted && result.error !== "timeout")) {
+        inflightRef.current = null;
+        remember(loadStoredRaw().filter((item) => item.id !== userMsg.id && item.id !== pendingMsg.id));
+        setDraft(text);
+        setPending(files);
+        return;
+      }
+      let reply = result.reply;
+      let local = false;
+      let added = [];
+      if (result.error === "timeout") {
+        reply = "Не успела ответить. Напишите ещё раз — я на связи.";
+        local = true;
+      } else if (result.error === "rate") {
+        reply = "Слишком много сообщений подряд. Подождите минуту и напишите ещё раз.";
+        local = true;
+      } else if (result.error === "unavailable") {
+        reply = `Консультант сейчас недоступен. Вот общая информация:\n${result.reply || "Сейчас не получилось ответить. Напишите ещё раз."}`;
+        local = true;
+      } else {
+        try {
+          const cart = applyAssistantCart(result.cart || []);
+          added = cart.added;
+          const note = chatCartNote(cart.skipped);
+          if (note) reply = `${reply}\n\n${note}`;
+        } catch {
+          reply = `${reply}\n\nНе удалось обновить корзину в браузере. Откройте корзину и проверьте заказ.`;
+        }
+      }
+      const digest = (result.files || [])
         .filter((file) => file && file.text)
         .map((file) => `[Файл «${file.name}»]\n${file.text}`)
         .join("\n\n");
-      if (userEntry && digest) userEntry.content = `${userEntry.content}\n\n${digest}`;
-      historyRef.current.push({ role: "assistant", content: reply });
-      const added = applyChatCart(cart || []);
-      const botMsg = { role: "bot", text: reply, files: [], ...(added.length ? { cart: added } : {}) };
-      remember([...withUser.slice(0, -1), botMsg]);
+      if (digest) userMsg.context = `${userMsg.context}\n\n${digest}`.slice(0, 4000);
+      const botMsg = {
+        id: newChatId(),
+        role: "bot",
+        text: reply,
+        files: [],
+        context: local ? "" : reply,
+        ...(local ? { local: true } : {}),
+        ...(result.error === "unavailable" ? { automatic: true } : {}),
+        ...(added.length ? { cart: added } : {}),
+      };
+      inflightRef.current = { user: userMsg, pending: pendingMsg, bot: botMsg };
+      publishInflight();
+    } catch {
+      const botMsg = {
+        id: newChatId(),
+        role: "bot",
+        text: "Не получилось отправить. Напишите ещё раз.",
+        files: [],
+        local: true,
+      };
+      inflightRef.current = { user: userMsg, pending: pendingMsg, bot: botMsg };
+      publishInflight();
     } finally {
+      inflightRef.current = null;
+      abortRef.current = null;
       sendingRef.current = false;
       setSending(false);
     }
@@ -299,11 +361,9 @@ export function ChatWidget() {
 
   function openChat() {
     setOpen(true);
-    if (!messages.length) {
+    if (!loadThread().length) {
       const hello = `Здравствуйте! Я ${NAME}, консультант. Подскажу по услугам, товарам и заказу. Можно прикрепить фото или файл.`;
-      const next = [{ role: "bot", text: hello, files: [] }];
-      remember(next);
-      historyRef.current = [{ role: "assistant", content: hello }];
+      remember([{ id: newChatId(), role: "bot", text: hello, context: hello, files: [] }]);
     }
     requestAnimationFrame(() => inputRef.current?.focus());
   }
@@ -354,7 +414,7 @@ export function ChatWidget() {
         <div className="ai-chat-messages" ref={listRef}>
           {messages.map((item, index) => (
             <div className={`ai-chat-row ai-chat-row--${item.role === "user" ? "user" : "bot"}`} key={`${item.role}-${index}`}>
-              <div className="ai-chat-bubble">
+              <div className={`ai-chat-bubble${item.automatic ? " is-auto" : ""}`}>
                 {item.files?.length ? (
                   <div className="ai-chat-media">
                     {item.files.map((file, fileIndex) =>
@@ -399,10 +459,18 @@ export function ChatWidget() {
           className="ai-chat-form"
           onSubmit={(event) => {
             event.preventDefault();
-            send(draft);
+            if (sending) cancelSend();
+            else send(draft);
           }}
         >
           <p className="form-note" role="status" hidden={!notice}>{notice}</p>
+          {photoFail ? (
+            <div className="form-note" role="alert">
+              <p>Не удалось сжать фото «{photoFail}». Сообщение не отправлено.</p>
+              <button type="button" onClick={sendWithoutPhoto}>Отправить без фото</button>
+              <button type="button" onClick={() => setPhotoFail("")}>Отмена</button>
+            </div>
+          ) : null}
           <div className="ai-chat-pending" hidden={!pending.length}>
             {pending.map((file, index) => (
               <div className="ai-chat-pending-item" key={`${file.name}-${index}`}>
@@ -485,10 +553,16 @@ export function ChatWidget() {
               }
             }}
           />
-          <button type="submit" className="ai-chat-send" aria-label="Отправить" title="Отправить" disabled={sending}>
-            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-              <path fill="currentColor" d="M3.05 20.95 21 12 3.05 3.05 3 10.2 15.2 12 3 13.8z" />
-            </svg>
+          <button type="submit" className="ai-chat-send" aria-label={sending ? "Остановить" : "Отправить"} title={sending ? "Остановить" : "Отправить"}>
+            {sending ? (
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" />
+              </svg>
+            ) : (
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                <path fill="currentColor" d="M3.05 20.95 21 12 3.05 3.05 3 10.2 15.2 12 3 13.8z" />
+              </svg>
+            )}
           </button>
           <input ref={photoRef} className="ai-chat-file" type="file" multiple accept="image/*" hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ""; }} />
           <input ref={fileRef} className="ai-chat-file" type="file" multiple accept="*/*" hidden onChange={(event) => { addFiles(event.target.files); event.target.value = ""; }} />

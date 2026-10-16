@@ -1,3 +1,4 @@
+import { ADMIN_SCHEMA_VERSION } from "./adminSession.js";
 import { getLang, t } from "./i18n.js";
 
 const storeListeners = new Set();
@@ -284,6 +285,26 @@ function formatPrice(value, currency = "kzt") {
   return `${amount} ${symbol}`;
 }
 
+const OPEN_PRICE_KZT = { service: 15000, product: 5000 };
+
+function openPriceAmount(itemType) {
+  return OPEN_PRICE_KZT[normalizeItemType(itemType) === "service" ? "service" : "product"];
+}
+
+function openPriceText(itemType, key, fallback) {
+  return orderText(key, fallback).replaceAll("{price}", formatPrice(openPriceAmount(itemType), "kzt"));
+}
+
+function isPriceOnRequest(product) {
+  return product?.priceOnRequest === true;
+}
+
+function isListedProduct(product) {
+  const price = Number(product?.price);
+  if (isPriceOnRequest(product)) return true;
+  return Number.isFinite(price) && price > 0;
+}
+
 function loadProducts() {
   try {
     const raw = localStorage.getItem(PRODUCTS_KEY);
@@ -325,6 +346,21 @@ function productStock(product) {
 function maxOrderQty(product) {
   const stock = productStock(product);
   return stock === null ? 99 : Math.min(99, stock);
+}
+
+/**
+ * Остаток, который попадёт в каталог при сохранении карточки.
+ * Поле, которое не трогали, не перезаписывает склад: пока форма открыта, заказы уже могли списать штуки.
+ * Услуга остаток не ведёт. Пустое поле у товара — без ограничения.
+ */
+function resolveStockSave({ itemType, stockTouched, formStock, currentStock }) {
+  if (normalizeItemType(itemType) === "service") return { ok: true, stock: null };
+  if (!stockTouched) return { ok: true, stock: productStock({ itemType: "product", stock: currentStock }) };
+  const raw = String(formStock ?? "").trim();
+  if (raw === "") return { ok: true, stock: null };
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) return { ok: false, stock: null };
+  return { ok: true, stock: Math.min(9999, Math.floor(value)) };
 }
 
 function maxOrderQtyById(productId) {
@@ -616,6 +652,23 @@ function publishEnsuredCatalog() {
   return ensureCatalogNow(catalogPushEnabled);
 }
 
+let catalogSyncState = "";
+
+function setCatalogSyncNotice(next) {
+  if (next === catalogSyncState) return;
+  catalogSyncState = next;
+  emitStore();
+}
+
+function catalogSyncNotice() {
+  return catalogSyncState;
+}
+
+function noteCatalogSync(result, hadSaved) {
+  if (result?.stale) return;
+  setCatalogSyncNotice(result?.ok ? "" : hadSaved ? "stale" : "seeds");
+}
+
 function settleHydration(result) {
   if (!hydrated) {
     if (!result?.ok) ensureCatalogNow(false);
@@ -633,6 +686,7 @@ function settleHydration(result) {
 /** { ok, empty, merged, stale }; ok=false — сервер недоступен, работаем с копией в браузере */
 function syncCatalogFromServer({ mergeLocalOnce = false } = {}) {
   if (location.protocol === "file:") return Promise.resolve({ ok: false });
+  const hadSaved = loadProducts().length > 0;
   const seq = ++syncSeq;
   let result = { ok: false };
   return fetch(CATALOG_API, { cache: "no-store" })
@@ -663,7 +717,11 @@ function syncCatalogFromServer({ mergeLocalOnce = false } = {}) {
       if (catalogStorageJson() !== before) emitStore();
       return { ok: true, empty: false, merged };
     })
-    .catch(() => ({ ok: false, stale: seq !== syncSeq }))
+    .catch((error) => {
+      const stale = seq !== syncSeq;
+      if (!stale) console.error("Не удалось загрузить каталог:", error?.message || error);
+      return { ok: false, stale };
+    })
     .then((value) => {
       result = value;
       return value;
@@ -671,6 +729,7 @@ function syncCatalogFromServer({ mergeLocalOnce = false } = {}) {
     .finally(() => {
       if (seq !== syncSeq) return;
       settleHydration(result);
+      noteCatalogSync(result, hadSaved);
     });
 }
 
@@ -694,9 +753,17 @@ function pushCatalogToServer() {
     /* ignore */
   }
   if (key) headers["X-Admin-Key"] = encodeURIComponent(key);
+  headers["X-Admin-Schema"] = String(ADMIN_SCHEMA_VERSION);
   pushInFlight = true;
   return fetch(CATALOG_API, { method: "PATCH", headers, body: JSON.stringify({ patch }), cache: "no-store" })
     .then(async (res) => {
+      if (res.status === 409) {
+        const denied = await res.json().catch(() => null);
+        if (denied?.error === "outdated_client") {
+          window.dispatchEvent(new CustomEvent("gulzat:outdated-admin"));
+          return "outdated";
+        }
+      }
       if (!res.ok) return res.status === 401 || res.status === 429 ? "unauthorized" : "error";
       const data = await res.json().catch(() => null);
       if (!data?.catalog || !Array.isArray(data.catalog.products)) return "error";
@@ -817,9 +884,9 @@ function buildOrderMessage(product, quantity = 1, customer = null, wishes = null
   const priceLine =
     unit > 0
       ? `${sumLabel} ${formatPrice(lineTotal, product.currency)}`
-      : isService
-        ? `${sumLabel} ${orderText("order.servicePrice", "от 15 000 ₸ — по сложности заказа")}`
-        : `${sumLabel} ${orderText("order.productPrice", "от 5 000 ₸ — индивидуальный заказ")}`;
+      : isPriceOnRequest(product)
+        ? `${sumLabel} ${openPriceText(product.itemType, isService ? "order.servicePrice" : "order.productPrice", isService ? "от {price} — по сложности заказа" : "от {price} — индивидуальный заказ")}`
+        : `${sumLabel} —`;
 
   return [
     orderGreeting(),
@@ -884,6 +951,55 @@ function loadCartWishes() {
   }
 }
 
+function clipText(value, max) {
+  const text = String(value || "").trim();
+  return text.length > max ? text.slice(0, max).trim() : text;
+}
+
+function appendWish(existing, piece, max) {
+  const base = String(existing || "").trim();
+  const add = String(piece || "").trim();
+  if (!add) return clipText(base, max);
+  if (!base) return clipText(add, max);
+  if (base.toLowerCase().includes(add.toLowerCase())) return clipText(base, max);
+  return clipText(`${base}; ${add}`, max);
+}
+
+function fitWish(existing, piece, max) {
+  const base = String(existing || "").trim();
+  const add = String(piece || "").trim();
+  if (!add) return { value: clipText(base, max), overflow: "" };
+  if (base.toLowerCase().includes(add.toLowerCase())) return { value: clipText(base, max), overflow: "" };
+  const joined = base ? `${base}; ${add}` : add;
+  if (joined.length <= max) return { value: joined, overflow: "" };
+  if (base && base.length <= max) return { value: base, overflow: add };
+  return { value: clipText(joined, max), overflow: joined.slice(max).trim() };
+}
+
+/** Дописывает цвет и комментарий к уже собранным, дату не затирает: в поле остаётся более ранняя. */
+function mergeCartWishes(current, incoming) {
+  const prev = {
+    color: String(current?.color || "").trim(),
+    dueDate: String(current?.dueDate || "").trim(),
+    comment: String(current?.comment || "").trim(),
+  };
+  let comment = appendWish(prev.comment, incoming?.comment, 500);
+  let dueDate = /^\d{4}-\d{2}-\d{2}$/.test(prev.dueDate) ? prev.dueDate : "";
+  const nextDate = String(incoming?.dueDate || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(nextDate) && nextDate !== dueDate) {
+    if (!dueDate) dueDate = nextDate;
+    else if (nextDate < dueDate) {
+      comment = appendWish(comment, `также к дате ${dueDate}`, 500);
+      dueDate = nextDate;
+    } else {
+      comment = appendWish(comment, `также к дате ${nextDate}`, 500);
+    }
+  }
+  const color = fitWish(prev.color, incoming?.color, 300);
+  if (color.overflow) comment = appendWish(comment, color.overflow, 500);
+  return { color: color.value, dueDate, comment };
+}
+
 function saveCartWishes(wishes) {
   const next = { ...loadCartWishes() };
   ["color", "dueDate", "comment"].forEach((key) => {
@@ -895,6 +1011,64 @@ function saveCartWishes(wishes) {
   } catch {
     /* ignore */
   }
+}
+
+function applyAssistantCart(items) {
+  const added = [];
+  const skipped = [];
+  const colors = [];
+  const comments = [];
+  const dates = [];
+  for (const item of Array.isArray(items) ? items : []) {
+    const id = String(item?.id || "");
+    const qty = Math.min(99, Math.max(1, Number(item?.qty) || 1));
+    const product = loadProducts().find((entry) => entry.id === id);
+    const label = String(product?.name || item?.name || "").trim() || "позиция";
+    if (!product) {
+      if (!skipped.includes(label)) skipped.push(label);
+      continue;
+    }
+    const replace = item.replace === true || item.replace === "true";
+    if (replace) setCartQty(id, qty);
+    else addToCart(id, qty);
+    const line = getCartLines().find((entry) => entry.product.id === id);
+    if (!line) {
+      if (!skipped.includes(label)) skipped.push(label);
+      continue;
+    }
+    const name = line.product.name || label;
+    added.push({ name, qty: line.qty });
+    const color = String(item.color || "").trim();
+    const comment = String(item.comment || "").trim();
+    if (color) colors.push({ name, text: color });
+    if (comment) comments.push({ name, text: comment });
+    const due = String(item.dueDate || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(due)) dates.push({ name, due });
+  }
+  if (added.length) {
+    const uniqueDates = [];
+    for (const entry of dates) {
+      if (!uniqueDates.includes(entry.due)) uniqueDates.push(entry.due);
+    }
+    uniqueDates.sort();
+    const dueDate = uniqueDates[0] || "";
+    let comment = comments.map((note) => `${note.name}: ${note.text}`).join("; ");
+    if (uniqueDates.length > 1) {
+      const extra = dates
+        .filter((entry) => entry.due !== dueDate)
+        .map((entry) => `${entry.name}: ${entry.due}`)
+        .join("; ");
+      comment = [comment, `другие даты: ${extra}`].filter(Boolean).join("; ");
+    }
+    saveCartWishes(
+      mergeCartWishes(loadCartWishes(), {
+        color: colors.map((note) => `${note.name}: ${note.text}`).join("; "),
+        dueDate,
+        comment,
+      }),
+    );
+  }
+  return { added, skipped };
 }
 
 function cartCount(items = loadCart()) {
@@ -952,7 +1126,7 @@ function getCartLines(cart = loadCart()) {
   return cart
     .map((item) => {
       const product = products.find((p) => p.id === item.id);
-      if (!product) return null;
+      if (!product || !isListedProduct(product)) return null;
       const qty = Math.min(item.qty, maxOrderQty(product));
       if (qty <= 0) return null;
       const unit = Number(product.price) || 0;
@@ -980,9 +1154,9 @@ function buildCartOrderMessage(cart = loadCart(), customer = null, wishes = null
     const pricePart =
       line.unit > 0
         ? formatPrice(line.lineTotal, line.product.currency)
-        : isService
-          ? orderText("price.fromService", "от 15 000 ₸")
-          : orderText("price.fromProduct", "от 5 000 ₸");
+        : isPriceOnRequest(line.product)
+          ? openPriceText(line.product.itemType, isService ? "price.fromService" : "price.fromProduct", isService ? "от {price}" : "от {price}")
+          : "—";
     return `• ${kind}: ${name} — ${line.qty} ${pcs} — ${pricePart}`;
   });
 
@@ -1110,8 +1284,9 @@ function removePendingOrder(body) {
 }
 
 /**
- * "ok" — принят; "out_of_stock" / "price_changed" — каталог у покупателя устарел;
- * "rejected" — ошибка данных, повтор бессмыслен; "retry" — сеть или 5xx
+ * "ok" — принят; "out_of_stock" / "price_changed" / "unavailable" — каталог у покупателя устарел;
+ * "rate_limited" — слишком много заявок, повтор из очереди ещё имеет смысл;
+ * "too_many" / "rejected" — повтор бессмыслен; "retry" — сеть или 5xx
  */
 function postOrder(body) {
   try {
@@ -1123,10 +1298,16 @@ function postOrder(body) {
     })
       .then(async (res) => {
         if (res.ok) return "ok";
-        if (res.status === 409) {
-          const data = await res.json().catch(() => ({}));
-          if (data.error === "out_of_stock" || data.error === "price_changed") return data.error;
+        const data =
+          res.status === 400 || res.status === 409 || res.status === 429 ? await res.json().catch(() => ({})) : {};
+        if (res.status === 429 && data.error === "too_many_orders") return "rate_limited";
+        if (
+          res.status === 409 &&
+          (data.error === "out_of_stock" || data.error === "price_changed" || data.error === "unavailable")
+        ) {
+          return data.error;
         }
+        if (res.status === 400 && data.error === "too_many_items") return "too_many";
         if (res.status >= 400 && res.status < 500) return "rejected";
         return "retry";
       })
@@ -1140,13 +1321,8 @@ function createClientId() {
   return `o${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 }
 
-/**
- * strictPrice: покупатель ещё в форме, поэтому при смене цены или нехватке остатка сервер отказывает,
- * и покупатель видит актуальные данные. В очередь заказ попадает без этого флага: покупатель уже
- * ушёл в WhatsApp, и сервер должен сохранить заказ в любом случае
- */
-function sendOrderToCrm({ customer, channel, source, items, wishes, clientId }) {
-  const payload = {
+function orderRequestBody({ customer, channel, source, items, wishes, clientId }) {
+  return {
     clientId: String(clientId || createClientId()),
     name: String(customer?.name || "").trim(),
     phone: String(customer?.phone || "").trim(),
@@ -1159,9 +1335,13 @@ function sendOrderToCrm({ customer, channel, source, items, wishes, clientId }) 
     page: location.pathname,
     lang: typeof getLang === "function" ? getLang() : "ru",
   };
-  return postOrder(JSON.stringify({ ...payload, strictPrice: true })).then((status) => {
-    if (status === "retry") queuePendingOrder(JSON.stringify(payload));
-    if (status === "out_of_stock" || status === "price_changed") {
+}
+
+/** Сервер всегда проверяет цену и наличие. В очередь заказ кладёт только явная кнопка WhatsApp. */
+function sendOrderToCrm({ customer, channel, source, items, wishes, clientId }) {
+  const payload = orderRequestBody({ customer, channel, source, items, wishes, clientId });
+  return postOrder(JSON.stringify(payload)).then((status) => {
+    if (status === "out_of_stock" || status === "price_changed" || status === "unavailable") {
       return syncCatalogFromServer().then(
         () => status,
         () => status
@@ -1182,7 +1362,13 @@ function flushPendingOrders() {
   Promise.all(
     queue.map((body) =>
       postOrder(body).then((status) => {
-        if (status !== "retry") removePendingOrder(body);
+        if (status === "retry" || status === "rate_limited") return;
+        removePendingOrder(body);
+        if (status !== "ok") {
+          window.dispatchEvent(new CustomEvent("gulzat:order-queue", { detail: status }));
+          if (status === "out_of_stock" || status === "price_changed" || status === "unavailable") return syncCatalogFromServer();
+        }
+        return undefined;
       })
     )
   ).finally(() => {
@@ -1198,6 +1384,7 @@ function ensureSampleService(publish) {
     id: "service-sample-it",
     name: "IT-системы и CRM",
     price: 0,
+    priceOnRequest: true,
     currency: "kzt",
     category: "it-systems",
     itemType: "service",
@@ -1227,6 +1414,7 @@ function ensureReadyMadeProduct(publish) {
     id: "ready-made-sets",
     name: "Готовые изделия",
     price: 0,
+    priceOnRequest: true,
     currency: "kzt",
     category: "wedding",
     itemType: "product",
@@ -1308,6 +1496,7 @@ function ensureCatalogServicesBody(publish) {
       id: "service-sites",
       name: "Сайты",
       price: 0,
+      priceOnRequest: true,
       currency: "kzt",
       category: "sites",
       itemType: "service",
@@ -1318,6 +1507,7 @@ function ensureCatalogServicesBody(publish) {
       id: "service-ai-video",
       name: "ИИ-ролики",
       price: 0,
+      priceOnRequest: true,
       currency: "kzt",
       category: "ai-video",
       itemType: "service",
@@ -1383,10 +1573,14 @@ export {
   normalizeItemType,
   itemTypeLabel,
   formatPrice,
+  openPriceAmount,
+  isPriceOnRequest,
+  isListedProduct,
   loadProducts,
   saveProducts,
   trySaveProducts,
   productStock,
+  resolveStockSave,
   maxOrderQty,
   createProductId,
   loadCart,
@@ -1394,6 +1588,8 @@ export {
   setCartQty,
   loadCartWishes,
   saveCartWishes,
+  mergeCartWishes,
+  applyAssistantCart,
   removeFromCart,
   clearCart,
   cartCount,
@@ -1408,14 +1604,20 @@ export {
   orderItemFromProduct,
   orderItemsFromCart,
   sendOrderToCrm,
+  orderRequestBody,
+  queuePendingOrder,
   flushPendingOrders,
   ensureCatalogProducts,
   ensureCatalogServices,
   restoreDefaultCatalog,
   markSeedRemoved,
   syncCatalogFromServer,
+  catalogSyncNotice,
   enableCatalogPush,
   disableCatalogPush,
   scheduleCatalogPush,
   formatDueDate,
 };
+
+
+

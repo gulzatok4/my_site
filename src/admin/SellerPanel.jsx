@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PHONE, formatPhone } from "../lib/catalog.js";
-import { adminFetch } from "../lib/adminSession.js";
+import { adminFetch, adminKey, subscribeAdmin } from "../lib/adminSession.js";
 import { t } from "../lib/i18n.js";
 
 const EMPTY = {
@@ -46,24 +46,64 @@ export function SellerPanel() {
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [ready, setReady] = useState(false);
+  const dirty = useRef(false);
+  const loaded = useRef(false);
   const defaultNote = t("delivery.pay.p", "ru");
 
   useEffect(() => {
     let alive = true;
-    adminFetch("/api/settings/seller")
-      .then((data) => {
-        if (alive) setForm(fromServer(data.seller));
-      })
-      .catch((reason) => {
-        if (!alive) return;
+    async function load() {
+      if (!adminKey()) {
+        if (alive) {
+          setReady(false);
+          setError("Сначала войдите в разделе «Заказы».");
+        }
+        return;
+      }
+      try {
+        const data = await adminFetch("/api/settings/seller");
+        if (!alive || !adminKey()) return;
+        if (dirty.current) {
+          setReady(true);
+          loaded.current = true;
+          return;
+        }
+        setForm(fromServer(data.seller));
+        setError("");
+        setReady(true);
+        loaded.current = true;
+      } catch (reason) {
+        if (!alive || dirty.current) return;
+        setReady(false);
         setError(reason.status === 401 || reason.status === 429 ? "Сначала войдите в разделе «Заказы»." : "Не удалось загрузить реквизиты.");
-      });
+      }
+    }
+    function onOrders() {
+      if (!loaded.current) load();
+    }
+    if (adminKey()) load();
+    else setError("Сначала войдите в разделе «Заказы».");
+    window.addEventListener("gulzat:orders-updated", onOrders);
+    const stop = subscribeAdmin((key) => {
+      if (key) return;
+      loaded.current = false;
+      dirty.current = false;
+      if (!alive) return;
+      setForm(EMPTY);
+      setReady(false);
+      setStatus("");
+      setError("Сначала войдите в разделе «Заказы».");
+    });
     return () => {
       alive = false;
+      stop();
+      window.removeEventListener("gulzat:orders-updated", onOrders);
     };
   }, []);
 
   function setField(key, value) {
+    dirty.current = true;
     setForm((current) => ({ ...current, [key]: value }));
     setStatus("");
   }
@@ -80,6 +120,9 @@ export function SellerPanel() {
     try {
       const data = await adminFetch("/api/settings/seller", { method: "PUT", body: JSON.stringify(payload) });
       setForm(fromServer(data.seller));
+      dirty.current = false;
+      loaded.current = true;
+      setReady(true);
       setStatus("Сохранено.");
     } catch (reason) {
       if (reason.status === 401 || reason.status === 429) setError("Сначала войдите в разделе «Заказы».");
@@ -189,7 +232,7 @@ export function SellerPanel() {
           </p>
         ) : null}
         <div className="admin-form-actions">
-          <button type="submit" className="btn" disabled={busy}>
+          <button type="submit" className="btn" disabled={busy || !ready}>
             {busy ? "Сохраняем…" : "Сохранить"}
           </button>
         </div>

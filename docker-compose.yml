@@ -1,0 +1,15 @@
+services:
+  site:
+    build: .
+    image: gulzat:local
+    ports:
+      - "127.0.0.1:8787:8787"
+    env_file:
+      - .env
+    environment:
+      SITE_HOST: "+"
+      SITE_PORT: "8787"
+    volumes:
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    restart: unless-stopped

@@ -157,6 +157,7 @@ function Limit-AiFileText([string]$text, [int]$max) {
 }
 
 function Read-AiAttachment($att) {
+  $script:AiFileDeadline = [DateTime]::UtcNow.AddSeconds(8)
   $kind = [string](Get-AiVal $att "kind")
   $name = ([string](Get-AiVal $att "name")).Trim()
   if (-not $name) { $name = "файл" }

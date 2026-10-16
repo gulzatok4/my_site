@@ -7,12 +7,12 @@
 }
 
 function ConvertTo-AiJson($value) {
-  return (New-AiSerializer).Serialize($value)
+  return (ConvertTo-JsonValue $value)
 }
 
 function ConvertFrom-AiJson([string]$text) {
   if (-not $text) { return $null }
-  return (New-AiSerializer).DeserializeObject($text)
+  return (ConvertFrom-JsonValue $text)
 }
 
 # Каталог из базы без фото. Своё подключение только на чтение: сервер в это время может записывать заказ.
@@ -156,8 +156,9 @@ function Invoke-OpenAiChat($payload) {
   $req.ContentType = "application/json; charset=utf-8"
   $req.Headers.Add("Authorization", "Bearer $apiKey")
   $req.ContentLength = $bodyBytes.Length
-  $req.Timeout = 180000
-  $req.ReadWriteTimeout = 180000
+  $budget = Get-AiRemainingMs
+  $req.Timeout = $budget
+  $req.ReadWriteTimeout = $budget
   $out = $req.GetRequestStream()
   try {
     $out.Write($bodyBytes, 0, $bodyBytes.Length)
@@ -168,6 +169,7 @@ function Invoke-OpenAiChat($payload) {
   try {
     $resp = $req.GetResponse()
   } catch [System.Net.WebException] {
+    if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::Timeout) { throw "timeout" }
     $failed = $_.Exception.Response
     $detail = $_.Exception.Message
     if ($failed) {
@@ -192,6 +194,13 @@ function Invoke-OpenAiChat($payload) {
   return $parsed
 }
 
+function Get-AiRemainingMs {
+  if (-not $script:AiTurnDeadline) { return 35000 }
+  $left = [int]($script:AiTurnDeadline - [DateTime]::UtcNow).TotalMilliseconds
+  if ($left -lt 3000) { throw "timeout" }
+  return [Math]::Min(35000, $left)
+}
+
 function Invoke-AiLoop($messages, [string]$model, $tools, [scriptblock]$Complete) {
   $toolList = ConvertTo-AiList $tools
   for ($round = 0; $round -lt 4; $round++) {
@@ -206,15 +215,18 @@ function Invoke-AiLoop($messages, [string]$model, $tools, [scriptblock]$Complete
       $payload["tool_choice"] = "auto"
     }
     $resp = $null
-    try {
-      if ($Complete) { $resp = & $Complete $payload } else { $resp = Invoke-OpenAiChat $payload }
-    } catch {
-      if (-not $allowTools) { throw }
-      $payload.Remove("tools")
-      $payload.Remove("tool_choice")
-      $allowTools = $false
-      Write-Host "AI retry without tools: $($_.Exception.Message)"
-      if ($Complete) { $resp = & $Complete $payload } else { $resp = Invoke-OpenAiChat $payload }
+    $attempt = 0
+    while ($true) {
+      try {
+        if ($Complete) { $resp = & $Complete $payload } else { $resp = Invoke-OpenAiChat $payload }
+        break
+      } catch {
+        $reason = $_.Exception.Message
+        if ($reason -eq "timeout") { throw }
+        $attempt += 1
+        if ($attempt -ge 2) { throw }
+        Write-Host "AI retry: $reason"
+      }
     }
     $choiceList = ConvertTo-AiList (Get-AiVal $resp "choices")
     $choice = $null
@@ -386,11 +398,13 @@ function Invoke-AiTurn {
   if (-not $built) { throw "bad_request" }
   $model = Get-AiModel
   $tools = Get-AiTools
+  $script:AiTurnDeadline = [DateTime]::UtcNow.AddSeconds(90)
   $script:AiCartActions = New-Object System.Collections.Generic.List[object]
   try {
     $reply = Invoke-AiLoop $built.Messages $model $tools $Complete
   } catch {
-    if (-not $built.HasMedia) { throw }
+    if ($_.Exception.Message -eq "timeout" -or -not $built.HasMedia) { throw }
+    $script:AiCartActions = New-Object System.Collections.Generic.List[object]
     Reset-AiUserMessage $built.Messages $built.Text
     $reply = Invoke-AiLoop $built.Messages $model $tools $Complete
   }
@@ -409,9 +423,13 @@ function Handle-Chat($ctx) {
   }
 
   try {
-    $data = Get-RequestJson $ctx
+    $data = Get-RequestJson $ctx 20000 20000000
   } catch {
-    Write-Json $ctx 400 @{ error = "bad_request"; reply = $null }
+    if ($_.Exception.Message -eq "too_large") {
+      Write-Json $ctx 413 @{ error = "too_large"; reply = $null }
+    } else {
+      Write-Json $ctx 400 @{ error = "bad_request"; reply = $null }
+    }
     return
   }
 
@@ -421,8 +439,13 @@ function Handle-Chat($ctx) {
     if (-not $reply) { throw "empty" }
     Write-Json $ctx 200 @{ reply = $reply; files = @($turn.Files); cart = @($turn.Cart); error = $null }
   } catch {
-    if ($_.Exception.Message -eq "bad_request") {
+    $reason = $_.Exception.Message
+    if ($reason -eq "bad_request") {
       Write-Json $ctx 400 @{ error = "bad_request"; reply = $null }
+      return
+    }
+    if ($reason -eq "timeout") {
+      Write-Json $ctx 504 @{ error = "timeout"; reply = $null }
       return
     }
     Write-Json $ctx 502 @{ error = "upstream"; reply = $null }

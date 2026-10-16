@@ -1157,6 +1157,17 @@ body.cart-open {
   min-height: 100vh;
 }
 
+.admin-outdated {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 0;
+  padding: 10px 6vw;
+  background: #f3e4c4;
+  color: #3d2a14;
+}
+
 .admin-nav {
   display: flex;
   align-items: center;
@@ -1254,6 +1265,15 @@ body.cart-open {
   color: #fff;
 }
 
+.admin-page .btn:disabled,
+.admin-page .btn:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: var(--admin-accent);
+  border-color: var(--admin-accent);
+  color: #fff;
+}
+
 .admin-page .btn-ghost {
   background: transparent;
   border-color: var(--admin-line);
@@ -1264,6 +1284,15 @@ body.cart-open {
   background: var(--olive-soft);
   border-color: var(--olive);
   color: var(--olive-deep);
+}
+
+.admin-page .btn-ghost:disabled,
+.admin-page .btn-ghost:disabled:hover {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: transparent;
+  border-color: var(--admin-line);
+  color: var(--admin-text);
 }
 
 .admin-tab[hidden] {
@@ -2887,6 +2916,11 @@ body.cart-open .ai-chat-toggle {
   border-bottom-left-radius: 4px;
 }
 
+.ai-chat-bubble.is-auto {
+  background: #f6f1e6;
+  border-style: dashed;
+}
+
 .ai-chat-row--user .ai-chat-bubble {
   background: var(--olive);
   color: #fff;
@@ -3463,6 +3497,52 @@ body.checkout-open {
 
 .checkout-submit {
   width: 100%;
+}
+
+.checkout-offline {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.error-screen {
+  min-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 12px;
+  padding: 48px 20px;
+}
+
+.site-notices {
+  position: fixed;
+  top: var(--nav-h, 4.5rem);
+  left: 0;
+  right: 0;
+  z-index: 31;
+}
+
+.catalog-sync-notice {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 0;
+  padding: 8px 16px;
+  background: #eef2e4;
+  color: #2c3820;
+}
+
+.queue-notice {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  margin: 0;
+  padding: 10px 16px;
+  background: #f3e4c4;
+  color: #3d2a14;
 }
 
 /* ---------- Связаться (модалка) ---------- */
@@ -4200,6 +4280,33 @@ body.checkout-open {
 
 .admin-modal-dialog.pdf-dialog-panel {
   width: min(520px, 100%);
+}
+
+.admin-page .admin-modal-dialog.catalog-pdf-panel {
+  background: #faf8f2;
+  color: #2c331f;
+  border-radius: 0;
+  padding: 1.15rem 1.2rem 1.15rem;
+}
+
+.admin-page .catalog-pdf-panel .admin-modal-head h2,
+.admin-page .catalog-pdf-panel .pdf-dialog-group {
+  color: #4f5c2e;
+}
+
+.admin-page .catalog-pdf-panel .pdf-dialog-lead,
+.admin-page .catalog-pdf-panel .pdf-check {
+  color: #2c331f;
+}
+
+.admin-page .catalog-pdf-panel .admin-modal-close {
+  color: #505740;
+}
+
+.pdf-dialog-lead {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.45;
 }
 
 .pdf-dialog {

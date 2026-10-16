@@ -21,7 +21,21 @@ export function toHref(raw) {
   return token;
 }
 
+const SITE_PHONE = "77051406940";
 const LINK_RE = /(https?:\/\/[^\s<>"']+|wa\.me\/[^\s<>"']+|\+7[\d\s\-()]{9,}|8\s?705\s?140\s?69\s?40)/gi;
+
+/** Кликабельными остаются только WhatsApp и телефон сайта. Остальные адреса показываются текстом. */
+export function isSiteHref(href) {
+  const value = String(href || "");
+  if (value === `tel:+${SITE_PHONE}`) return true;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.hostname !== "wa.me") return false;
+    return url.pathname.replace(/\D/g, "") === SITE_PHONE;
+  } catch {
+    return false;
+  }
+}
 
 export function linkParts(text) {
   const source = stripMarkdown(text);
@@ -33,8 +47,12 @@ export function linkParts(text) {
     if (match.index > last) parts.push(source.slice(last, match.index));
     const raw = match[0];
     const href = toHref(raw);
-    const label = /wa\.me/i.test(href) ? href.replace(/^https?:\/\//i, "") : raw;
-    parts.push({ href, label });
+    if (isSiteHref(href)) {
+      const label = /wa\.me/i.test(href) ? href.replace(/^https?:\/\//i, "") : raw;
+      parts.push({ href, label });
+    } else {
+      parts.push(raw);
+    }
     last = match.index + raw.length;
   }
   if (last < source.length) parts.push(source.slice(last));

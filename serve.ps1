@@ -1,5 +1,5 @@
 ﻿$root = $PSScriptRoot
-$rootFull = [IO.Path]::GetFullPath($root).TrimEnd("\") + "\"
+$rootFull = [IO.Path]::GetFullPath($root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
 $envFile = Join-Path $root ".env"
 $dataDir = Join-Path $root "data"
 $dbFile = Join-Path $dataDir "gulzat.db"
@@ -8,9 +8,26 @@ $orderStatuses = @("new", "work", "done", "cancel")
 $pendingWrites = New-Object System.Collections.Generic.List[object]
 
 # Все данные — в SQLite (db\db.ps1). Пишет только основной поток сервера, каждое изменение — одна транзакция
-. (Join-Path $root "db\db.ps1")
-. (Join-Path $root "db\migrate-json.ps1")
+. (Join-Path (Join-Path $root "db") "db.ps1")
+. (Join-Path (Join-Path $root "db") "migrate-json.ps1")
 $db = $null
+$script:ServerLogDir = Join-Path $dataDir "logs"
+
+function Write-ServerLog([string]$message) {
+  $safe = [regex]::Replace($message, '(?i)(password|secret|api[_-]?key|bearer)\s*[:=]\s*\S+', '${1}=***')
+  $safe = [regex]::Replace($safe, '\d{7,}', '***')
+  if (-not (Test-Path $script:ServerLogDir)) { New-Item -ItemType Directory -Path $script:ServerLogDir | Out-Null }
+  $path = Join-Path $script:ServerLogDir ("serve-" + (Get-Date -Format "yyyy-MM-dd") + ".log")
+  if ((Test-Path $path) -and (Get-Item $path).Length -gt 5MB) {
+    $path = Join-Path $script:ServerLogDir ("serve-" + (Get-Date -Format "yyyy-MM-dd-HHmmss") + ".log")
+  }
+  Add-Content -LiteralPath $path -Encoding UTF8 -Value ("{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $safe)
+}
+
+function Write-ServerNote([string]$message) {
+  Write-Host $message
+  try { Write-ServerLog $message } catch { Write-Host "WARNING: server log was not written" }
+}
 
 function Load-DotEnv([string]$path) {
   if (-not (Test-Path $path -PathType Leaf)) { return }
@@ -68,10 +85,25 @@ function Get-Val($obj, [string]$key) {
   return $null
 }
 
-function Get-RequestJson($ctx, [int]$timeoutMs = 0) {
+function Get-RequestJson($ctx, [int]$timeoutMs = 0, [int]$maxChars = 0) {
   $reader = New-Object IO.StreamReader($ctx.Request.InputStream, [Text.Encoding]::UTF8)
   try {
-    if ($timeoutMs -gt 0) {
+    if ($maxChars -gt 0) {
+      $buf = New-Object char[] 8192
+      $sb = New-Object Text.StringBuilder
+      $started = [DateTime]::UtcNow
+      while ($true) {
+        if ($timeoutMs -gt 0 -and ([DateTime]::UtcNow - $started).TotalMilliseconds -gt $timeoutMs) {
+          $ctx.Response.Abort()
+          throw "request body timeout"
+        }
+        $n = $reader.Read($buf, 0, $buf.Length)
+        if ($n -le 0) { break }
+        if ($sb.Length + $n -gt $maxChars) { throw "too_large" }
+        [void]$sb.Append($buf, 0, $n)
+      }
+      $raw = $sb.ToString()
+    } elseif ($timeoutMs -gt 0) {
       $task = $reader.ReadToEndAsync()
       if (-not $task.Wait($timeoutMs)) {
         $ctx.Response.Abort()
@@ -85,11 +117,7 @@ function Get-RequestJson($ctx, [int]$timeoutMs = 0) {
     $reader.Close()
   }
   if (-not $raw) { return $null }
-  Add-Type -AssemblyName System.Web.Extensions
-  $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
-  $ser.MaxJsonLength = 16777216
-  $ser.RecursionLimit = 64
-  return $ser.DeserializeObject($raw)
+  return (ConvertFrom-JsonValue $raw)
 }
 
 
@@ -114,6 +142,13 @@ function Write-JsonText($ctx, [string]$json) {
 $adminFailures = @{}
 $adminMaxFailures = 10
 $adminLockMinutes = 15
+# Новые заявки, не повтор уже принятого заказа. 20 с одного адреса и 60 со всех за 15 минут:
+# человек спокойно оформит заказ, скрипт не заполнит базу
+$orderAttempts = @{}
+$orderAttemptAll = New-Object System.Collections.Generic.List[datetime]
+$orderWindowMinutes = 15
+$orderMaxPerAddress = 20
+$orderMaxTotal = 60
 
 # Сервер слушает только 127.0.0.1, поэтому снаружи сайт открыт через туннель и все запросы приходят «с 127.0.0.1».
 # Настоящий адрес кладёт сам туннель: CF-Connecting-IP (Cloudflare) или последний адрес в X-Forwarded-For
@@ -131,7 +166,7 @@ function Get-ClientAddress($ctx) {
 function Test-AdminAccess($ctx) {
   $script:adminBlocked = $false
   $password = ([string]$env:ADMIN_PASSWORD).Trim()
-  if (-not $password) { return $true }
+  if (-not $password) { return $false }
   $ip = Get-ClientAddress $ctx
   $now = [DateTime]::UtcNow
   $entry = $adminFailures[$ip]
@@ -153,9 +188,50 @@ function Test-AdminAccess($ctx) {
   $entry.count++
   if ($entry.count -ge $adminMaxFailures) {
     $entry.blockedUntil = $now.AddMinutes($adminLockMinutes)
-    Write-Host "Admin login blocked for $ip for $adminLockMinutes minutes after $($entry.count) wrong passwords"
+    Write-ServerNote "Admin login blocked for $ip for $adminLockMinutes minutes after $($entry.count) wrong passwords"
   }
   return $false
+}
+
+function Trim-OrderAttempts([datetime]$now) {
+  $cutoff = $now.AddMinutes(-$orderWindowMinutes)
+  for ($i = $script:orderAttemptAll.Count - 1; $i -ge 0; $i--) {
+    if ($script:orderAttemptAll[$i] -lt $cutoff) { $script:orderAttemptAll.RemoveAt($i) }
+  }
+  foreach ($ip in @($script:orderAttempts.Keys)) {
+    $list = $script:orderAttempts[$ip]
+    for ($i = $list.Count - 1; $i -ge 0; $i--) {
+      if ($list[$i] -lt $cutoff) { $list.RemoveAt($i) }
+    }
+    if ($list.Count -eq 0) { $script:orderAttempts.Remove($ip) }
+  }
+}
+
+# $false — новых заявок уже слишком много. Повтор с тем же clientId сюда не попадает
+function Register-OrderAttempt([string]$ip) {
+  $now = [DateTime]::UtcNow
+  Trim-OrderAttempts $now
+  $list = $script:orderAttempts[$ip]
+  if (-not $list) {
+    $list = New-Object System.Collections.Generic.List[datetime]
+    $script:orderAttempts[$ip] = $list
+  }
+  if ($list.Count -ge $orderMaxPerAddress -or $script:orderAttemptAll.Count -ge $orderMaxTotal) { return $false }
+  $list.Add($now)
+  $script:orderAttemptAll.Add($now)
+  return $true
+}
+
+function Test-AdminSchema($ctx) {
+  $raw = ""
+  try { $raw = [string]$ctx.Request.Headers["X-Admin-Schema"] } catch { $raw = "" }
+  $version = 0
+  if (-not [int]::TryParse(([string]$raw).Trim(), [ref]$version)) { return $false }
+  return $version -ge $script:AdminSchemaVersion
+}
+
+function Write-OutdatedClient($ctx) {
+  Write-Json $ctx 409 @{ ok = $false; error = "outdated_client" }
 }
 
 function Write-AdminDenied($ctx) {
@@ -249,13 +325,16 @@ function Create-Order($ctx) {
     return
   }
 
-  $items = New-Object System.Collections.Generic.List[object]
   $rawItems = Get-Val $data "items"
-  if ($rawItems) {
-    foreach ($raw in @($rawItems)) {
-      if ($items.Count -ge 50) { break }
-      if ($raw) { [void]$items.Add((New-OrderItem $raw)) }
-    }
+  $rawList = @()
+  if ($rawItems) { $rawList = @($rawItems) }
+  if ($rawList.Count -gt 50) {
+    Write-Json $ctx 400 @{ ok = $false; error = "too_many_items" }
+    return
+  }
+  $items = New-Object System.Collections.Generic.List[object]
+  foreach ($raw in $rawList) {
+    if ($raw) { [void]$items.Add((New-OrderItem $raw)) }
   }
   if ($items.Count -eq 0) {
     Write-Json $ctx 400 @{ ok = $false; error = "no_items" }
@@ -282,27 +361,33 @@ function Create-Order($ctx) {
     }
   }
 
-  # strictPrice — покупатель ещё на странице и может поправить заказ. Без него это повтор из очереди:
-  # покупатель уже ушёл в WhatsApp, и заказ нужно сохранить в любом случае
-  $strict = [bool](Get-Val $data "strictPrice")
-  if ((Resolve-OrderItems $items) -and $strict) {
+  # Публичное создание заказа всегда строгое: чужая цена и позиция не из каталога не сохраняются.
+  # Поле strictPrice больше не читается. Админка заказы этим путём не создаёт.
+  $priceChanged = Resolve-OrderItems $items
+  $missing = $false
+  foreach ($item in $items) {
+    if ($item -is [System.Collections.IDictionary] -and $item.Contains("unverified") -and $item["unverified"]) {
+      $missing = $true
+      break
+    }
+  }
+  if ($missing) {
+    Write-Json $ctx 409 @{ ok = $false; error = "unavailable" }
+    return
+  }
+  if ($priceChanged) {
     Write-Json $ctx 409 @{ ok = $false; error = "price_changed" }
     return
   }
 
-  $stockShort = $false
   $stockHeld = $false
   $plan = Get-StockPlan $db $items
   if ($null -eq $plan) {
-    if ($strict) {
-      Write-Json $ctx 409 @{ ok = $false; error = "out_of_stock" }
-      return
-    }
-    $stockShort = $true
-  } else {
-    $stockHeld = Use-CatalogStock $db $items $plan
-    for ($i = 0; $i -lt $items.Count; $i++) { $items[$i]["stockTaken"] = $plan[$i] }
+    Write-Json $ctx 409 @{ ok = $false; error = "out_of_stock" }
+    return
   }
+  $stockHeld = Use-CatalogStock $db $items $plan
+  for ($i = 0; $i -lt $items.Count; $i++) { $items[$i]["stockTaken"] = $plan[$i] }
 
   $number = Get-NextOrderNumber $db
   $order = [ordered]@{
@@ -317,13 +402,12 @@ function Create-Order($ctx) {
     channel = $channel
     source = $source
     items = $items.ToArray()
-    color = Limit-Text (Get-Val $data "color") 80
+    color = Limit-Text (Get-Val $data "color") 300
     dueDate = $dueDate
     comment = Limit-Text (Get-Val $data "comment") 500
     page = Limit-Text (Get-Val $data "page") 200
     lang = Limit-Text (Get-Val $data "lang") 5
   }
-  if ($stockShort) { $order["stockShort"] = $true }
   Add-DbOrder $db $order
   Set-DbMeta $db "order_seq" $number
   # Сбой записи клиента не должен терять сам заказ: клиент пишется в точке сохранения и откатывается отдельно
@@ -333,7 +417,11 @@ function Create-Order($ctx) {
     $db.Exec("RELEASE client")
   } catch {
     $db.Exec("ROLLBACK TO client; RELEASE client")
-    Write-Host "Clients save error: $($_.Exception.Message)"
+    Write-ServerNote "Clients save error: $($_.Exception.Message)"
+  }
+  if (-not (Register-OrderAttempt (Get-ClientAddress $ctx))) {
+    Write-Json $ctx 429 @{ ok = $false; error = "too_many_orders" }
+    return
   }
   $db.Commit()
   Write-Json $ctx 200 @{ ok = $true; id = $order.id; number = $order.number }
@@ -362,6 +450,10 @@ function Handle-Orders($ctx, [string]$method, [string]$path) {
   }
   if ($method -ne "PATCH" -and $method -ne "DELETE") {
     Write-Json $ctx 405 @{ ok = $false; error = "method_not_allowed" }
+    return
+  }
+  if (-not (Test-AdminSchema $ctx)) {
+    Write-OutdatedClient $ctx
     return
   }
   $data = $null
@@ -425,6 +517,10 @@ function Handle-Clients($ctx, [string]$method, [string]$path) {
 
   if ($method -eq "GET" -and $path -eq "/api/clients") {
     Write-JsonText $ctx ('{"ok":true,"clients":' + (Get-ClientsJson $db) + '}')
+    return
+  }
+  if (-not (Test-AdminSchema $ctx)) {
+    Write-OutdatedClient $ctx
     return
   }
 
@@ -576,7 +672,7 @@ function Merge-ProductPatch($products, $productPatch) {
       continue
     }
     if ($count -ge $catalogProductLimit) {
-      Write-Host "WARNING: catalog already has $catalogProductLimit products, new product $id was not added"
+      Write-ServerNote "WARNING: catalog already has $catalogProductLimit products, new product $id was not added"
       continue
     }
     $after = [string](Get-Val $add "after")
@@ -656,6 +752,10 @@ function Handle-Catalog($ctx, [string]$method) {
     Write-AdminDenied $ctx
     return
   }
+  if (-not (Test-AdminSchema $ctx)) {
+    Write-OutdatedClient $ctx
+    return
+  }
   if ($ctx.Request.ContentLength64 -gt 16777216) {
     Write-Json $ctx 413 @{ ok = $false; error = "too_large" }
     return
@@ -681,8 +781,8 @@ function Handle-Catalog($ctx, [string]$method) {
 }
 
 $distDir = Join-Path $root "dist"
-$distFull = [IO.Path]::GetFullPath($distDir).TrimEnd("\") + "\"
-$imagesFull = [IO.Path]::GetFullPath((Join-Path $root "images")).TrimEnd("\") + "\"
+$distFull = [IO.Path]::GetFullPath($distDir).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+$imagesFull = [IO.Path]::GetFullPath((Join-Path $root "images")).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
 
 $staticTypes = @{
   ".html" = "text/html; charset=utf-8"
@@ -781,7 +881,7 @@ function Serve-Static($ctx, [string]$path) {
 # Ядро — папка ai: load.ps1 подхватывает ai\skills\*.ps1 на каждом сообщении.
 $aiDir = Join-Path $root "ai"
 $chatState = [System.Management.Automation.Runspaces.InitialSessionState]::CreateDefault()
-foreach ($fn in "Write-Bytes", "Write-Json", "Get-Val", "Get-RequestJson") {
+foreach ($fn in "Write-Bytes", "Write-Json", "Get-Val", "ConvertFrom-JsonValue", "Get-RequestJson") {
   $definition = (Get-Command $fn -CommandType Function).Definition
   $chatState.Commands.Add((New-Object System.Management.Automation.Runspaces.SessionStateFunctionEntry($fn, $definition)))
 }
@@ -814,6 +914,30 @@ function Clear-FinishedChats {
   }
 }
 
+$chatHits = @{}
+
+# Чат открыт всем, поэтому один адрес не может занять очередь и сжечь ключ OpenAI
+function Test-ChatAllowed($ctx) {
+  Clear-FinishedChats
+  if ($chatJobs.Count -ge 8) { return "busy" }
+  $ip = Get-ClientAddress $ctx
+  $now = [DateTime]::UtcNow
+  $window = $now.AddMinutes(-1)
+  $hits = New-Object System.Collections.Generic.List[datetime]
+  if ($script:chatHits.ContainsKey($ip)) {
+    foreach ($at in @($script:chatHits[$ip])) {
+      if ($at -gt $window) { [void]$hits.Add($at) }
+    }
+  }
+  if ($hits.Count -ge 8) {
+    $script:chatHits[$ip] = $hits
+    return "rate"
+  }
+  [void]$hits.Add($now)
+  $script:chatHits[$ip] = $hits
+  return "ok"
+}
+
 function Handle-Seller($ctx, [string]$method) {
   if (-not (Test-AdminAccess $ctx)) {
     Write-AdminDenied $ctx
@@ -825,6 +949,10 @@ function Handle-Seller($ctx, [string]$method) {
   }
   if ($method -ne "PUT") {
     Write-Json $ctx 405 @{ ok = $false; error = "method_not_allowed" }
+    return
+  }
+  if (-not (Test-AdminSchema $ctx)) {
+    Write-OutdatedClient $ctx
     return
   }
   if ($ctx.Request.ContentLength64 -gt 65536) {
@@ -847,6 +975,11 @@ function Handle-Request($ctx) {
   $method = $ctx.Request.HttpMethod.ToUpperInvariant()
 
   if ($method -eq "POST" -and $path -eq "/api/chat") {
+    $gate = Test-ChatAllowed $ctx
+    if ($gate -ne "ok") {
+      Write-Json $ctx 429 @{ error = $gate; reply = $null }
+      return
+    }
     Start-ChatRequest $ctx
     return
   }
@@ -855,7 +988,7 @@ function Handle-Request($ctx) {
     try {
       Handle-Orders $ctx $method $path
     } catch {
-      Write-Host "Orders API error: $($_.Exception.Message)"
+      Write-ServerNote "Orders API error: $($_.Exception.Message)"
       try { Write-Json $ctx 500 @{ ok = $false; error = "server_error" } } catch {}
     }
     return
@@ -865,7 +998,7 @@ function Handle-Request($ctx) {
     try {
       Handle-Catalog $ctx $method
     } catch {
-      Write-Host "Catalog API error: $($_.Exception.Message)"
+      Write-ServerNote "Catalog API error: $($_.Exception.Message)"
       try { Write-Json $ctx 500 @{ ok = $false; error = "server_error" } } catch {}
     }
     return
@@ -875,7 +1008,7 @@ function Handle-Request($ctx) {
     try {
       Handle-Seller $ctx $method
     } catch {
-      Write-Host "Seller API error: $($_.Exception.Message)"
+      Write-ServerNote "Seller API error: $($_.Exception.Message)"
       try { Write-Json $ctx 500 @{ ok = $false; error = "server_error" } } catch {}
     }
     return
@@ -885,7 +1018,7 @@ function Handle-Request($ctx) {
     try {
       Handle-Clients $ctx $method $path
     } catch {
-      Write-Host "Clients API error: $($_.Exception.Message)"
+      Write-ServerNote "Clients API error: $($_.Exception.Message)"
       try { Write-Json $ctx 500 @{ ok = $false; error = "server_error" } } catch {}
     }
     return
@@ -895,9 +1028,16 @@ function Handle-Request($ctx) {
 }
 
 Load-DotEnv $envFile
+if (-not ([string]$env:ADMIN_PASSWORD).Trim()) {
+  Write-ServerNote "ERROR: ADMIN_PASSWORD is empty. Set it in .env and start the server again."
+  exit 1
+}
 $port = 0
-if (-not [int]::TryParse(([string]$env:SITE_PORT).Trim(), [ref]$port) -or $port -le 0) { $port = 8765 }
-$prefix = "http://127.0.0.1:$port/"
+if (-not [int]::TryParse(([string]$env:SITE_PORT).Trim(), [ref]$port) -or $port -le 0) { $port = 8787 }
+# Пустой SITE_HOST — только этот компьютер. В Docker задаётся "+", иначе проброс порта не доходит до сервера.
+$listenHost = ([string]$env:SITE_HOST).Trim()
+if (-not $listenHost) { $listenHost = "127.0.0.1" }
+$prefix = "http://${listenHost}:$port/"
 $listener = [System.Net.HttpListener]::new()
 $listener.Prefixes.Add($prefix)
 try {
@@ -908,12 +1048,12 @@ try {
   # Ответы отдаются в фоне, но совсем застрявшее соединение (меньше 1 КБ/с) нужно обрывать, чтобы не копить память
   $listener.TimeoutManager.MinSendBytesPerSecond = 1024
 } catch {
-  Write-Host "WARNING: could not set request timeouts: $($_.Exception.Message)"
+  Write-ServerNote "WARNING: could not set request timeouts: $($_.Exception.Message)"
 }
 try {
   $listener.Start()
 } catch {
-  Write-Host "ERROR: could not start server at $prefix ($($_.Exception.Message)). Is another serve.ps1 already running?"
+  Write-ServerNote "ERROR: could not start server at $prefix ($($_.Exception.Message)). Is another serve.ps1 already running?"
   exit 1
 }
 
@@ -924,12 +1064,14 @@ try {
   $db = Open-GulzatDb $dbFile
   $dbCheck = Test-GulzatDb $db
   if ($dbCheck -ne "ok") {
-    Write-Host "WARNING: database $dbFile is damaged ($dbCheck). Stop the server and restore the latest copy from $backupDir"
+    Write-ServerNote "ERROR: database $dbFile is damaged ($dbCheck). Restore the latest copy from $backupDir and start the server again."
+    $listener.Stop()
+    exit 1
   }
   Initialize-GulzatSchema $db
   Import-LegacyJsonData $db $dataDir
 } catch {
-  Write-Host "ERROR: database $dbFile is not available: $($_.Exception.Message)"
+  Write-ServerNote "ERROR: database $dbFile is not available: $($_.Exception.Message)"
   $listener.Stop()
   exit 1
 }
@@ -943,13 +1085,13 @@ function Invoke-DailyMaintenance {
     if ($removed -gt 0) { Write-Host "Removed $removed photos no product has used for 30 days" }
   } catch {
     $db.Rollback()
-    Write-Host "WARNING: unused photos were not cleaned up: $($_.Exception.Message)"
+    Write-ServerNote "WARNING: unused photos were not cleaned up: $($_.Exception.Message)"
   }
   try {
     $backup = Backup-GulzatDb $db $backupDir
     if ($backup) { Write-Host "Database backup saved to $backup" }
   } catch {
-    Write-Host "WARNING: database backup failed: $($_.Exception.Message)"
+    Write-ServerNote "WARNING: database backup failed: $($_.Exception.Message)"
   }
 }
 
@@ -965,13 +1107,13 @@ function Invoke-WalSync {
     if ($changes -eq $script:walChanges) { return }
     if (Sync-GulzatWal $db) { $script:walChanges = $changes }
   } catch {
-    Write-Host "WARNING: database journal was not merged: $($_.Exception.Message)"
+    Write-ServerNote "WARNING: database journal was not merged: $($_.Exception.Message)"
   }
 }
 Invoke-DailyMaintenance
 
 $keyState = if (([string]$env:OPENAI_API_KEY).Trim()) { "API key loaded" } else { "API key empty - set OPENAI_API_KEY in .env" }
-$adminState = if (([string]$env:ADMIN_PASSWORD).Trim()) { "admin password set" } else { "WARNING: ADMIN_PASSWORD empty - orders are open to anyone" }
+$adminState = "admin password set"
 $frontState = if (Test-Path -LiteralPath (Join-Path $distDir "index.html")) { "React build" } else { "WARNING: dist/index.html missing - run npm run build" }
 Write-Host "Serving $root at $prefix ($keyState; $adminState; $frontState; SQLite $sqliteVersion)"
 
@@ -991,7 +1133,7 @@ while ($listener.IsListening) {
   } catch {
     $contextTask = $null
     if (-not $listener.IsListening) { break }
-    Write-Host "Accept error: $($_.Exception.Message)"
+    Write-ServerNote "Accept error: $($_.Exception.Message)"
     continue
   }
   Complete-PendingWrites
@@ -999,7 +1141,7 @@ while ($listener.IsListening) {
   try {
     Handle-Request $ctx
   } catch {
-    Write-Host "Request error: $($_.Exception.Message)"
+    Write-ServerNote "Request error: $($_.Exception.Message)"
     try { $ctx.Response.StatusCode = 500; $ctx.Response.Close() } catch {}
   } finally {
     # Обработчик вышел, не зафиксировав транзакцию (ошибка или отказ) — ничего из неё не сохраняется

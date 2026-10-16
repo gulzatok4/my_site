@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { formatMoney, summarizeInvoice } from "../pdf/money.js";
 
 const REQUIRED = ["name", "bin", "address", "bank", "iik", "bik", "kbe"];
@@ -39,6 +40,7 @@ export function InvoiceDialog({ order, seller, onClose }) {
   const [error, setError] = useState("");
   const [readyFile, setReadyFile] = useState(null);
   const alive = useRef(true);
+  const navigate = useNavigate();
   const canShare = useMemo(() => canSharePdfFile(), []);
   const blocked = sellerBlocked(seller);
   const mixed = useMemo(() => {
@@ -145,8 +147,15 @@ export function InvoiceDialog({ order, seller, onClose }) {
         <div className="pdf-dialog">
           {blocked ? (
             <p className="form-note" role="alert">
-              Заполните реквизиты.{" "}
-              <a href="#seller" onClick={onClose}>
+              Счёт не скачается, пока в «Реквизитах» не сохранены данные продавца: наименование, БИН/ИИН, адрес, банк, ИИК, БИК и КБе. Компания и БИН в этом окне — это покупатель.{" "}
+              <a
+                href="#seller"
+                onClick={(event) => {
+                  event.preventDefault();
+                  onClose();
+                  navigate({ pathname: "/admin", hash: "seller" });
+                }}
+              >
                 Открыть «Реквизиты»
               </a>
             </p>

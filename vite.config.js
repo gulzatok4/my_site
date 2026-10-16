@@ -37,8 +37,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:8765",
-      "/media": "http://127.0.0.1:8765",
+      "/api": "http://127.0.0.1:8787",
+      "/media": "http://127.0.0.1:8787",
     },
   },
   build: {

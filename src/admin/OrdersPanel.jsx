@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { CURRENCIES, formatDueDate, formatPhone, formatPrice, normalizeCurrency } from "../lib/catalog.js";
+import { CURRENCIES, formatDueDate, formatPhone, formatPrice, normalizeCurrency, openPriceAmount } from "../lib/catalog.js";
 import { adminFetch, adminKey, setAdminKey } from "../lib/adminSession.js";
 import { downloadXlsx, exportDateStamp } from "../lib/xlsx.js";
 
@@ -29,7 +29,7 @@ function statusLabel(code) {
 
 function linePrice(item) {
   const price = Number(item.price) || 0;
-  if (price <= 0) return item.itemType === "service" ? "от 15 000 ₸" : "от 5 000 ₸";
+  if (price <= 0) return `от ${formatPrice(openPriceAmount(item.itemType), "kzt")}`;
   return formatPrice(price * (Number(item.qty) || 1), item.currency);
 }
 
@@ -140,6 +140,8 @@ export function OrdersPanel({ onBadge }) {
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
   const [note, setNote] = useState("");
+  const [staleAt, setStaleAt] = useState("");
+  const freshAt = useRef("");
   const [needLogin, setNeedLogin] = useState(!adminKey());
   const [password, setPassword] = useState("");
   const [pendingCancel, setPendingCancel] = useState("");
@@ -178,7 +180,12 @@ export function OrdersPanel({ onBadge }) {
     if (!silent) setNote("Загружаю заказы…");
     try {
       const data = await adminFetch("/api/orders");
-      const next = Array.isArray(data.orders) ? data.orders : [];
+      if (!Array.isArray(data.orders)) {
+        const error = new Error("bad_json");
+        error.status = 500;
+        throw error;
+      }
+      const next = data.orders;
       if (knownIds.current) {
         const fresh = next.filter((order) => !knownIds.current.has(order.id) && order.status === "new");
         if (fresh.length && localStorage.getItem(ALERTS_KEY) === "on") notify(fresh);
@@ -186,6 +193,8 @@ export function OrdersPanel({ onBadge }) {
       knownIds.current = new Set(next.map((order) => order.id));
       setOrders(next);
       setNeedLogin(false);
+      freshAt.current = new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+      setStaleAt("");
       if (!silent) setNote("");
       window.dispatchEvent(new Event("gulzat:orders-updated"));
     } catch (error) {
@@ -202,7 +211,9 @@ export function OrdersPanel({ onBadge }) {
               ? "Неверный пароль."
               : "Введите пароль, чтобы увидеть заказы."
         );
-      } else if (!silent) {
+      } else if (silent) {
+        setStaleAt(freshAt.current || "—");
+      } else {
         setNote("Не удалось загрузить заказы. Проверьте, что запущен serve.ps1.");
       }
     }
@@ -287,8 +298,12 @@ export function OrdersPanel({ onBadge }) {
       );
       setPendingCancel("");
       setNote(`Статус заказа изменён: «${statusLabel(status)}».`);
-    } catch {
-      setNote("Не удалось изменить статус. Попробуйте ещё раз.");
+    } catch (error) {
+      setNote(
+        error?.data?.error === "out_of_stock"
+          ? "Не хватает остатка, чтобы вернуть заказ в работу."
+          : "Не удалось изменить статус. Попробуйте ещё раз."
+      );
     }
   }
 
@@ -449,6 +464,11 @@ export function OrdersPanel({ onBadge }) {
       <p className="form-note" role="status">
         {note}
       </p>
+      {staleAt ? (
+        <p className="form-note" role="alert">
+          Не удалось обновить, данные от {staleAt}.
+        </p>
+      ) : null}
       <div className="orders-list">
         {!needLogin && !orders.length ? <p className="admin-empty">Заказов пока нет. Они появятся, когда клиент оформит заказ на сайте.</p> : null}
         {!needLogin && orders.length && !visible.length ? (

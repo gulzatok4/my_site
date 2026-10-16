@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { loadProducts, maxOrderQty } from "../lib/catalog.js";
-import { priceLabel, stockLabel } from "../lib/display.js";
+import { featurePrice, priceLabel, stockLabel } from "../lib/display.js";
 import { useStore } from "../store.jsx";
 
 export function HomePage() {
@@ -93,7 +93,7 @@ export function HomePage() {
                 </div>
                 <div className="product-body">
                   <h3>{service?.name || t("feat.service.title")}</h3>
-                  <p className="product-price">{service ? priceLabel(service) : t("feat.service.price")}</p>
+                  <p className="product-price">{service ? priceLabel(service) : featurePrice("service")}</p>
                   <p className="product-desc">{service?.description || t("feat.service.desc")}</p>
                   {service && stockLabel(service) ? <p className="product-stock">{stockLabel(service)}</p> : null}
                   <div className="card-actions">
@@ -111,7 +111,7 @@ export function HomePage() {
                 </div>
                 <div className="product-body">
                   <h3>{goods?.name || t("feat.product.title")}</h3>
-                  <p className="product-price">{goods ? priceLabel(goods) : t("feat.product.price")}</p>
+                  <p className="product-price">{goods ? priceLabel(goods) : featurePrice("product")}</p>
                   <p className="product-desc">{goods?.description || t("feat.product.desc")}</p>
                   {goods && stockLabel(goods) ? <p className={`product-stock${maxOrderQty(goods) <= 0 ? " is-out" : ""}`}>{stockLabel(goods)}</p> : null}
                   <div className="card-actions">

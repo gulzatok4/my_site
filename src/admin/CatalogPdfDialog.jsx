@@ -1,6 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { subscribeStore } from "../lib/catalog.js";
+import { ornamentBorderDataUri } from "../pdf/ornament.js";
 import { catalogMatchCount, choiceKey, choicesForScope } from "../pdf/select.js";
+
+const catalogFrameStyle = {
+  borderWidth: 20,
+  borderStyle: "solid",
+  borderColor: "transparent",
+  borderImageSource: ornamentBorderDataUri({ paper: "#faf8f2" }),
+  borderImageSlice: 22,
+  borderImageWidth: "20px",
+  borderImageRepeat: "round",
+  borderRadius: 0,
+};
 
 function canSharePdfFile() {
   try {
@@ -12,6 +24,15 @@ function canSharePdfFile() {
   } catch {
     return false;
   }
+}
+
+function countLabel(count) {
+  const mod100 = count % 100;
+  const mod10 = count % 10;
+  if (mod100 >= 11 && mod100 <= 14) return "позиций";
+  if (mod10 === 1) return "позиция";
+  if (mod10 >= 2 && mod10 <= 4) return "позиции";
+  return "позиций";
 }
 
 function defaultKeys(scope) {
@@ -79,8 +100,10 @@ export function CatalogPdfDialog({ onClose }) {
     try {
       const pdf = await import("../pdf/output.js");
       const options = { scope, selectedKeys: selected, showPrices };
-      if (action === "share") await pdf.shareCatalogPdf(options);
-      else await pdf.downloadCatalogPdf(options);
+      const failed = action === "share" ? await pdf.shareCatalogPdf(options) : await pdf.downloadCatalogPdf(options);
+      if (alive.current && failed > 0) {
+        setError(`PDF сохранён. Не загрузилось фото: ${failed}. На их месте — цветная плашка.`);
+      }
     } catch (reason) {
       if (reason?.name === "AbortError") return;
       if (reason?.name === "NotAllowedError" && reason.file) {
@@ -108,14 +131,17 @@ export function CatalogPdfDialog({ onClose }) {
   return (
     <div className="admin-modal">
       <div className="admin-modal-backdrop" onClick={busy ? undefined : onClose} />
-      <div className="admin-modal-dialog pdf-dialog-panel" role="dialog" aria-modal="true" aria-labelledby="catalog-pdf-title">
+      <div className="admin-modal-dialog pdf-dialog-panel catalog-pdf-panel" style={catalogFrameStyle} role="dialog" aria-modal="true" aria-labelledby="catalog-pdf-title">
         <div className="admin-modal-head">
-          <h2 id="catalog-pdf-title">Каталог PDF</h2>
+          <div>
+            <h2 id="catalog-pdf-title">Каталог PDF</h2>
+          </div>
           <button type="button" className="admin-modal-close" aria-label="Закрыть" onClick={onClose} disabled={busy}>
             ×
           </button>
         </div>
         <div className="pdf-dialog">
+          <p className="pdf-dialog-lead">Современный каталог в цветах сайта, с национальным орнаментом. В файл войдёт {count === 0 ? "ни одной позиции" : `${count} ${countLabel(count)}`}.</p>
           <div className="pdf-dialog-choices" role="radiogroup" aria-label="Что включить">
             {[
               ["products", "Товары"],

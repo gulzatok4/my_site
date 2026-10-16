@@ -3,10 +3,13 @@
 # Библиотека SQLite лежит в db\native, консоль для ручного просмотра базы — db\tools\sqlite3.exe.
 # Файлы .ps1 сохранять в UTF-8 с BOM: без него Windows PowerShell портит кириллицу.
 $script:DbRoot = $PSScriptRoot
-$script:DbSchemaVersion = 2
-$script:ProductFields = @("id", "itemType", "category", "name", "price", "currency", "stock", "description", "image", "link")
+$script:DbSchemaVersion = 3
+# Совпадает с ADMIN_SCHEMA_VERSION в src/lib/adminSession.js. Старая вкладка админки эту версию не присылает.
+$script:AdminSchemaVersion = $script:DbSchemaVersion
+$script:ProductFields = @("id", "itemType", "category", "name", "price", "priceOnRequest", "currency", "stock", "description", "image", "link")
 $script:MediaExtensions = @{ "image/jpeg" = ".jpg"; "image/png" = ".png"; "image/webp" = ".webp"; "image/gif" = ".gif" }
 $script:MediaTypes = @{ ".jpg" = "image/jpeg"; ".jpeg" = "image/jpeg"; ".png" = "image/png"; ".webp" = "image/webp"; ".gif" = "image/gif" }
+. (Join-Path $PSScriptRoot "json.ps1")
 
 function Initialize-GulzatSqlite {
   if (-not ("Gulzat.Data.SqliteDb" -as [type])) {
@@ -47,6 +50,7 @@ CREATE TABLE IF NOT EXISTS products (
   category TEXT NOT NULL DEFAULT '',
   name TEXT NOT NULL DEFAULT '',
   price REAL NOT NULL DEFAULT 0,
+  price_on_request INTEGER NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'kzt',
   stock INTEGER CHECK (stock IS NULL OR stock >= 0),
   description TEXT NOT NULL DEFAULT '',
@@ -147,6 +151,12 @@ function Initialize-GulzatSchema($db) {
     }
     $hasUnused = [long]$db.Scalar("SELECT COUNT(*) FROM pragma_table_info('media') WHERE name = 'unused_since'", $null)
     if ($hasUnused -eq 0) { $db.Exec("ALTER TABLE media ADD COLUMN unused_since TEXT") }
+    # Версия 3: «цена по запросу» — отдельный флаг, а не цена 0
+    $hasPriceFlag = [long]$db.Scalar("SELECT COUNT(*) FROM pragma_table_info('products') WHERE name = 'price_on_request'", $null)
+    if ($hasPriceFlag -eq 0) {
+      $db.Exec("ALTER TABLE products ADD COLUMN price_on_request INTEGER NOT NULL DEFAULT 0")
+      $db.Exec("UPDATE products SET price_on_request = 1 WHERE price IS NULL OR price <= 0")
+    }
     Set-DbMeta $db "schema_version" $script:DbSchemaVersion
     $db.Commit()
   } catch {
@@ -251,6 +261,15 @@ function Get-DbValue($obj, [string]$key) {
   return $null
 }
 
+function Test-DbHasKey($obj, [string]$key) {
+  if ($null -eq $obj) { return $false }
+  if ($obj -is [System.Collections.IDictionary]) {
+    if ($obj.PSObject.Methods["ContainsKey"]) { return [bool]$obj.ContainsKey($key) }
+    return [bool]$obj.Contains($key)
+  }
+  return $null -ne $obj.PSObject.Properties[$key]
+}
+
 function ConvertTo-ObjectList($value) {
   $list = New-Object System.Collections.Generic.List[object]
   if ($null -eq $value) { return ,$list }
@@ -305,12 +324,13 @@ function ConvertTo-DbProductParams($product, [int]$position) {
     category = [string](Get-DbValue $product "category")
     name = [string](Get-DbValue $product "name")
     price = $price
+    price_on_request = (ConvertTo-DbFlag (Get-DbValue $product "priceOnRequest"))
     currency = $currency
     stock = $stock
     description = [string](Get-DbValue $product "description")
     image = [string](Get-DbValue $product "image")
     link = [string](Get-DbValue $product "link")
-    extra = (New-DbJsonSerializer).Serialize($extra)
+    extra = (ConvertTo-JsonValue $extra)
   }
 }
 
@@ -321,6 +341,7 @@ function ConvertFrom-DbProductRow($row, [switch]$NoImage) {
   $product["category"] = [string]$row["category"]
   $product["name"] = [string]$row["name"]
   $product["price"] = [double]$row["price"]
+  $product["priceOnRequest"] = [bool][long]$row["price_on_request"]
   $product["currency"] = [string]$row["currency"]
   $product["stock"] = $(if ($null -eq $row["stock"]) { $null } else { [long]$row["stock"] })
   $product["description"] = [string]$row["description"]
@@ -329,7 +350,7 @@ function ConvertFrom-DbProductRow($row, [switch]$NoImage) {
   $extraText = [string]$row["extra"]
   if ($extraText -and $extraText -ne "{}") {
     try {
-      $extra = (New-DbJsonSerializer).DeserializeObject($extraText)
+      $extra = ConvertFrom-JsonValue $extraText
       if ($extra -is [System.Collections.IDictionary]) {
         foreach ($key in @($extra.Keys)) {
           if (-not $product.ContainsKey([string]$key)) { $product[[string]$key] = $extra[$key] }
@@ -349,6 +370,7 @@ WITH p AS (
     json_object(
       'id', id, 'itemType', item_type, 'category', category, 'name', name,
       'price', CASE WHEN price = CAST(price AS INTEGER) THEN CAST(price AS INTEGER) ELSE price END,
+      'priceOnRequest', CASE WHEN price_on_request THEN json('true') ELSE json('false') END,
       'currency', currency, 'stock', stock, 'description', description,
       'image', CASE WHEN @no_images THEN '' ELSE image END, 'link', link
     ) AS base
@@ -378,7 +400,7 @@ function Get-CatalogJson($db, [switch]$NoImages) {
 function Get-CatalogDocument($db, [switch]$NoImages) {
   $json = Get-CatalogJson $db -NoImages:$NoImages
   if ($null -eq $json) { return $null }
-  return (New-DbJsonSerializer).DeserializeObject($json)
+  return (ConvertFrom-JsonValue $json)
 }
 
 # revision растёт при каждой записи каталога, включая списание остатков:
@@ -402,17 +424,22 @@ function Save-CatalogDocument($db, $catalog, $touched = $null) {
     $ids.Add($id)
     if ($null -eq $touched -or $touched.Contains($id)) { $changed.Add(@{ product = $product; position = $ids.Count - 1 }) }
   }
-  $idsJson = (New-DbJsonSerializer).Serialize($ids.ToArray())
+  $idsJson = ConvertTo-JsonValue ($ids.ToArray())
   $db.Execute("DELETE FROM products WHERE id NOT IN (SELECT value FROM json_each(@ids))", @{ ids = $idsJson })
   foreach ($entry in $changed) {
+    $params = ConvertTo-DbProductParams $entry.product $entry.position
+    # Поля нет — оставляем флаг в базе. Явный false его снимает.
+    $params.keep_price_on_request = $(if (Test-DbHasKey $entry.product "priceOnRequest") { 0 } else { 1 })
     $db.Execute(@'
-INSERT INTO products (id, position, item_type, category, name, price, currency, stock, description, image, link, extra)
-VALUES (@id, @position, @item_type, @category, @name, @price, @currency, @stock, @description, @image, @link, @extra)
+INSERT INTO products (id, position, item_type, category, name, price, price_on_request, currency, stock, description, image, link, extra)
+VALUES (@id, @position, @item_type, @category, @name, @price, @price_on_request, @currency, @stock, @description, @image, @link, @extra)
 ON CONFLICT (id) DO UPDATE SET
   position = excluded.position, item_type = excluded.item_type, category = excluded.category, name = excluded.name,
-  price = excluded.price, currency = excluded.currency, stock = excluded.stock, description = excluded.description,
-  image = excluded.image, link = excluded.link, extra = excluded.extra
-'@, (ConvertTo-DbProductParams $entry.product $entry.position))
+  price = excluded.price,
+  price_on_request = CASE WHEN @keep_price_on_request <> 0 THEN products.price_on_request ELSE excluded.price_on_request END,
+  currency = excluded.currency, stock = excluded.stock,
+  description = excluded.description, image = excluded.image, link = excluded.link, extra = excluded.extra
+'@, $params)
   }
   # Порядок пересчитывается, только если он поменялся: товар добавили, удалили или переставили
   $order = [string]$db.Scalar("SELECT json_group_array(id ORDER BY position, rowid) FROM products", $null)
@@ -666,7 +693,7 @@ function ConvertFrom-DbOrderRow($row, $items) {
 # Список заказов для админки собирает сама SQLite: поля те же, что у ConvertFrom-DbOrderRow,
 # необязательные (updatedAt, cancelReason, stockShort, unverified) появляются только когда заданы
 $script:OrdersJsonSql = @'
-SELECT json_group_array(json(json_patch(
+SELECT COALESCE(json_group_array(json(json_patch(
   json_object(
     'id', o.id, 'clientId', COALESCE(o.client_id, ''),
     'stockHeld', CASE WHEN o.stock_held THEN json('true') ELSE json('false') END,
@@ -681,7 +708,7 @@ SELECT json_group_array(json(json_patch(
     'color', o.color, 'dueDate', o.due_date, 'comment', o.comment, 'page', o.page, 'lang', o.lang, 'note', o.note
   ),
   json_object('updatedAt', o.updated_at, 'cancelReason', o.cancel_reason, 'stockShort', CASE WHEN o.stock_short THEN json('true') END)
-)) ORDER BY o.number DESC)
+)) ORDER BY o.number DESC), '[]')
 FROM orders o
 '@
 
@@ -724,7 +751,7 @@ ON CONFLICT (phone) DO UPDATE SET
 }
 
 $script:ClientsJsonSql = @'
-SELECT json_group_array(json(json_patch(
+SELECT COALESCE(json_group_array(json(json_patch(
   json_object(
     'id', c.id, 'name', c.name, 'phone', c.phone, 'channel', c.channel, 'source', c.source, 'note', c.note,
     'createdAt', c.created_at, 'lastSeenAt', COALESCE(c.last_seen_at, '')
@@ -734,7 +761,7 @@ SELECT json_group_array(json(json_patch(
     'ordersCount', (SELECT COUNT(*) FROM orders o WHERE o.phone = c.phone),
     'lastOrderAt', (SELECT COALESCE(MAX(o.created_at), '') FROM orders o WHERE o.phone = c.phone)
   )
-)) ORDER BY c.created_at DESC, c.rowid DESC)
+)) ORDER BY c.created_at DESC, c.rowid DESC), '[]')
 FROM clients c
 '@
 

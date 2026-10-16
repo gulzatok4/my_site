@@ -7,7 +7,7 @@ $script:AiDataDir = Join-Path (Split-Path -Parent $PSScriptRoot) "data"
 $script:AiSkills = New-Object System.Collections.Generic.List[object]
 $script:AiFileReaders = New-Object System.Collections.Generic.List[object]
 
-. (Join-Path (Split-Path -Parent $PSScriptRoot) "db\db.ps1")
+. (Join-Path (Join-Path (Split-Path -Parent $PSScriptRoot) "db") "db.ps1")
 . (Join-Path $PSScriptRoot "core.ps1")
 . (Join-Path $PSScriptRoot "files.ps1")
 . (Join-Path $PSScriptRoot "prompt.ps1")
